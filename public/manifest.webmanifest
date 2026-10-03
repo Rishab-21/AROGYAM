@@ -1,0 +1,15 @@
+{
+  "name": "AROGYAM — Your Health Companion",
+  "short_name": "AROGYAM",
+  "description": "Friendly daily health companion: medicines, health band, AI guidance and emergency help.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F3FAF5",
+  "theme_color": "#0F6B3F",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/IMG_1169.jpg", "sizes": "192x192", "type": "image/jpeg", "purpose": "any" },
+    { "src": "/IMG_1169.jpg", "sizes": "512x512", "type": "image/jpeg", "purpose": "any" },
+    { "src": "/IMG_1169.jpg", "sizes": "512x512", "type": "image/jpeg", "purpose": "maskable" }
+  ]
+}
