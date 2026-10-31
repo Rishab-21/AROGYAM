@@ -42,3 +42,4 @@ The AI assistant is served by a Supabase Edge Function so the API key stays secr
 ## PWA
 
 The app is installable. The manifest is at `public/manifest.webmanifest` and the service worker at `public/sw.js`. The uploaded logo is used as the app icon, splash, and header brand.
+# AROGYAM_2.0
