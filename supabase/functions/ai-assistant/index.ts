@@ -53,7 +53,7 @@ Deno.serve(async (req: Request) => {
       stepsToday: health.stepsToday ?? 0,
       waterToday: health.waterToday ?? 0,
     });
-    const apiKey = Deno.env.get("GEMINI_API_KEY")?.trim();
+    const apiKey = (Deno.env.get("GEMINI_API_KEY") || Deno.env.get("VITE_GEMINI_API_KEY"))?.trim();
 
     if (!apiKey) {
       const fallback = language === "Hindi"
@@ -63,7 +63,15 @@ Deno.serve(async (req: Request) => {
     }
 
     const prompt = `You are Arogyam, a warm health companion. Reply in ${language}. Use the user's details only to make the answer relevant. Give exactly one short, sweet sentence in plain language, under 25 words. Do not diagnose, prescribe, or invent readings. If the user asks about an emergency or dangerous reading, tell them to contact a doctor or emergency service. User details: ${context}. Question: ${message}`;
-    const candidateModels = ["gemini-flash-latest", "gemini-3.7-flash", "gemini-3.8-flash"];
+    const candidateModels = [
+      "gemini-flash-lite-latest",
+      "gemini-3.1-flash-lite",
+      "gemini-3.5-flash-lite",
+      "gemini-3.5-flash",
+      "gemini-3.8-flash",
+      "gemini-3.7-flash",
+      "gemini-flash-latest",
+    ];
     let reply = "";
 
     for (const model of candidateModels) {
@@ -74,8 +82,10 @@ Deno.serve(async (req: Request) => {
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 1000 } }),
         });
         if (response.ok) {
-          const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-          const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+          const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }> };
+          const parts = data.candidates?.[0]?.content?.parts ?? [];
+          const textPart = parts.find((p) => p.text && !p.thought)?.text || parts[0]?.text;
+          const candidateText = textPart?.trim();
           if (candidateText) {
             reply = candidateText;
             break;

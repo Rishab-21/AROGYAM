@@ -64,7 +64,15 @@ function createAiMiddleware(apiKey: string) {
         }
 
         const prompt = `You are Arogyam, a warm health companion. Reply in ${language}. Use the user's details only to make the answer relevant. Give exactly one short, sweet sentence in plain language, under 25 words. Do not diagnose, prescribe, or invent readings. If the user asks about an emergency or dangerous reading, tell them to contact a doctor or emergency service. User details: ${context}. Question: ${message}`;
-        const candidateModels = ['gemini-flash-latest', 'gemini-3.7-flash', 'gemini-3.8-flash'];
+        const candidateModels = [
+          'gemini-flash-lite-latest',
+          'gemini-3.1-flash-lite',
+          'gemini-3.5-flash-lite',
+          'gemini-3.5-flash',
+          'gemini-3.8-flash',
+          'gemini-3.7-flash',
+          'gemini-flash-latest',
+        ];
         let reply = '';
 
         for (const model of candidateModels) {
@@ -75,12 +83,17 @@ function createAiMiddleware(apiKey: string) {
               body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 1000 } }),
             });
             if (geminiRes.ok) {
-              const data = await geminiRes.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-              const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+              const data = await geminiRes.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }> };
+              const parts = data.candidates?.[0]?.content?.parts ?? [];
+              const textPart = parts.find((p) => p.text && !p.thought)?.text || parts[0]?.text;
+              const candidateText = textPart?.trim();
               if (candidateText) {
                 reply = candidateText;
                 break;
               }
+            } else {
+              const errBody = await geminiRes.text();
+              console.warn(`Local dev Gemini returned ${geminiRes.status} for ${model}:`, errBody.slice(0, 120));
             }
           } catch (err) {
             console.error(`Local dev Gemini fetch failed for ${model}:`, err instanceof Error ? err.message : 'error');
@@ -122,7 +135,7 @@ function aiAssistantPlugin(apiKey: string): Plugin {
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const geminiApiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY || '';
+  const geminiApiKey = env.GEMINI_API_KEY || env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
 
   return {
     plugins: [react(), aiAssistantPlugin(geminiApiKey)],
