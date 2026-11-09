@@ -110,6 +110,14 @@ const uiTranslations: Record<string, string> = {
   'Your name': 'आपका नाम', 'Age in years': 'उम्र सालों में', 'Choose one': 'एक चुनें',
   'Choose all that apply': 'जो लागू हो चुनें', 'For example 6000': 'जैसे 6000', 'Millilitres, for example 2000': 'मिलीलीटर, जैसे 2000',
   'Name of someone we can call': 'जिसे हम कॉल कर सकें उसका नाम', 'For example daughter': 'जैसे बेटी',
+  'Time to take your medicine!': 'दवाई लेने का समय हो गया!',
+  'Medicine Reminder': 'दवाई का रिमाइंडर',
+  'Please take this medication as prescribed by your doctor.': 'कृपया डॉक्टर की सलाह अनुसार यह दवाई समय पर लें।',
+  'Snooze 5 min': '5 मिनट बाद याद दिलाएँ',
+  'Dismiss': 'हटाएँ',
+  'Test alarm started': 'टेस्ट अलार्म शुरू हुआ',
+  'Alarm snoozed for 5 minutes': 'अलार्म 5 मिनट के लिए आगे बढ़ाया गया',
+  'Marked as taken': 'दवाई ले ली दर्ज की गई',
 };
 
 export const ui = (language: Language, value: string): string => language === 'hi' ? (uiTranslations[value] ?? value) : value;

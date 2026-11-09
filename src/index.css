@@ -307,6 +307,204 @@ body { margin: 0; font-family: 'Nunito', system-ui, sans-serif; background: line
 .large-text .section-heading h2, .large-text .page-title-row h1, .large-text .setup-content h1 { font-size: 130%; }
 .large-text .vital strong { font-size: 24px; }
 
+/* Medicine Alarm Overlay */
+.alarm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 74, 44, 0.72);
+  backdrop-filter: blur(8px);
+  z-index: 250;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.alarm-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--white);
+  border-radius: 28px;
+  padding: 28px 22px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  position: relative;
+  border: 3px solid var(--lime);
+  animation: scaleUp 0.3s ease;
+}
+
+@keyframes scaleUp {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.alarm-icon-ring {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--warn) 0%, #e08f10 100%);
+  color: var(--white);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+  animation: alarmPulse 1.5s infinite;
+}
+
+@keyframes alarmPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(240, 160, 32, 0.7);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 16px rgba(240, 160, 32, 0);
+    transform: scale(1.05);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(240, 160, 32, 0);
+    transform: scale(1);
+  }
+}
+
+.alarm-bell-icon {
+  animation: bellWiggle 0.6s ease infinite alternate;
+}
+
+@keyframes bellWiggle {
+  0% { transform: rotate(-18deg); }
+  100% { transform: rotate(18deg); }
+}
+
+.alarm-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--mint);
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 800;
+  padding: 6px 14px;
+  border-radius: 12px;
+  margin-bottom: 8px;
+}
+
+.alarm-title {
+  font-size: 24px;
+  font-weight: 900;
+  color: var(--green-dark);
+  margin: 0 0 14px;
+  line-height: 1.2;
+}
+
+.alarm-medicine-details {
+  width: 100%;
+  background: var(--mint);
+  border-radius: 18px;
+  padding: 16px;
+  margin-bottom: 12px;
+  border: 1px solid #d0e4d8;
+}
+
+.alarm-med-name {
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--ink);
+  display: block;
+  margin-bottom: 8px;
+}
+
+.alarm-med-meta {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.alarm-chip {
+  padding: 6px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.alarm-chip.dosage {
+  background: var(--green);
+  color: var(--white);
+}
+
+.alarm-chip.food {
+  background: var(--white);
+  color: var(--green-dark);
+  border: 1px solid #c2ded0;
+}
+
+.alarm-help-text {
+  font-size: 13px;
+  color: #6b8a7a;
+  margin: 0 0 18px;
+  line-height: 1.4;
+}
+
+.alarm-actions {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.alarm-take-btn {
+  background: linear-gradient(135deg, var(--green) 0%, var(--leaf) 100%);
+  font-size: 17px;
+  padding: 15px;
+}
+
+.alarm-secondary-actions {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.alarm-snooze-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--mint);
+  color: var(--green);
+  border: 2px solid #d0e4d8;
+  padding: 12px;
+  border-radius: 14px;
+  font-weight: 800;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.alarm-dismiss-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #fdeaea;
+  color: var(--danger);
+  border: none;
+  padding: 12px;
+  border-radius: 14px;
+  font-weight: 800;
+  font-size: 14px;
+  cursor: pointer;
+}
+
 @media (min-width: 760px) {
   body { padding-top: 10px; }
   .phone-shell { border-radius: 36px; overflow: hidden; min-height: calc(100vh - 80px); margin-bottom: 20px; border: 1px solid #d0e4d8; }

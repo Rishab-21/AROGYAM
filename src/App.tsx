@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity, AlarmClock, Apple, ArrowRight, Bell, Bluetooth, CalendarDays, Check, ChevronRight, CircleHelp,
   Droplets, Flame, HeartPulse, Hospital, Languages, Leaf, MapPin, Menu, Mic, MoreHorizontal, Pause, Phone,
@@ -7,6 +7,18 @@ import {
 } from 'lucide-react';
 import { connectBand } from '@/lib/bluetooth';
 import { Language, t, ui } from '@/i18n';
+import {
+  startAlarmSound, stopAlarmSound,
+  triggerVibration, requestNotificationPermission, triggerSystemNotification
+} from '@/lib/alarm';
+import {
+  createMedicineNotificationChannel,
+  requestNativeNotificationPermission,
+  scheduleMedicineNotification,
+  cancelMedicineNotification,
+  cancelAllMedicineNotifications,
+  listenForNotificationTap,
+} from '@/lib/notifications';
 
 type Tab = 'home' | 'medicines' | 'health' | 'ai' | 'more';
 type Profile = { name: string; age: string; gender: string; height: string; weight: string; conditions: string[]; food: string; steps: number; water: number; nominee: string; relationship: string; phone: string };
@@ -62,19 +74,153 @@ function App() {
   const [waterToday, setWaterToday] = useState(0); const [stepsToday, setStepsToday] = useState(0);
   const [heartRate, setHeartRate] = useState(0); const [bloodPressure, setBloodPressure] = useState('0/0'); const [temperature, setTemperature] = useState('0');
   const [toast, setToast] = useState('');
+  const [activeAlarm, setActiveAlarm] = useState<Medicine | null>(null);
+  const [firedAlarms, setFiredAlarms] = useState<Record<string, boolean>>({});
+
+  // ─── Native notification setup (runs once on mount) ─────────────────────────
+  useEffect(() => {
+    // Create Android notification channel + request permissions
+    createMedicineNotificationChannel();
+    requestNativeNotificationPermission();
+
+    // Listen: if user taps a notification while app is closed, open alarm UI
+    let cleanup = () => {};
+    listenForNotificationTap((medicineId) => {
+      setMedicines((current) => {
+        const med = current.find((m) => m.id === medicineId);
+        if (med && !med.taken && !med.paused) {
+          triggerAlarm(med);
+        }
+        return current;
+      });
+    }).then((fn) => { cleanup = fn; });
+    return () => cleanup();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => { localStorage.setItem('arogyam-medicines', JSON.stringify(medicines)); }, [medicines]);
   useEffect(() => { localStorage.setItem('arogyam-language', language); }, [language]);
   useEffect(() => { if (toast) { const timer = window.setTimeout(() => setToast(''), 2600); return () => window.clearTimeout(timer); } }, [toast]);
+
+  // Reset taken status when a new calendar day arrives
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const lastDate = localStorage.getItem('arogyam-medicines-date');
+    if (lastDate && lastDate !== today) {
+      setMedicines((current) => current.map((m) => ({ ...m, taken: false })));
+      setFiredAlarms({});
+    }
+    localStorage.setItem('arogyam-medicines-date', today);
+  }, []);
+
+  const triggerAlarm = useCallback((med: Medicine) => {
+    setActiveAlarm(med);
+    startAlarmSound();
+    triggerVibration();
+    triggerSystemNotification(
+      `${med.name} - ${ui(language, 'Medicine Reminder')}`,
+      `${med.dosage} · ${ui(language, med.food)}`
+    );
+    // Also fire a native OS notification so it shows even if app is in background
+    const [h = '0', m = '0'] = med.time.split(':');
+    scheduleMedicineNotification(
+      med.id,
+      med.name,
+      med.dosage,
+      ui(language, med.food),
+      Number(h),
+      Number(m),
+    );
+  }, [language]);
+
+  const stopCurrentAlarm = () => {
+    stopAlarmSound();
+    setActiveAlarm(null);
+  };
+
+  const handleTakeAlarmMedicine = (id: number) => {
+    stopCurrentAlarm();
+    markTaken(id);
+    setToast(ui(language, 'Marked as taken'));
+  };
+
+  const handleSnoozeAlarm = (med: Medicine, minutes = 5) => {
+    stopCurrentAlarm();
+    setToast(ui(language, 'Alarm snoozed for 5 minutes'));
+    window.setTimeout(() => {
+      triggerAlarm(med);
+    }, minutes * 60 * 1000);
+  };
+
+  const handleTestAlarm = () => {
+    void requestNotificationPermission().catch(() => {});
+    const now = new Date();
+    const currentH = String(now.getHours()).padStart(2, '0');
+    const currentM = String(now.getMinutes()).padStart(2, '0');
+    const sampleMed: Medicine = medicines.find((m) => !m.paused && !m.taken) || medicines[0] || {
+      id: 999999,
+      name: 'Metformin',
+      dosage: '1 tablet',
+      time: `${currentH}:${currentM}`,
+      food: 'After food',
+      paused: false,
+      taken: false,
+    };
+    triggerAlarm(sampleMed);
+    setToast(ui(language, 'Test alarm started'));
+  };
+
+  // Medicine alarm checker: checks every second against scheduled times
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = new Date();
+      const currentH = String(now.getHours()).padStart(2, '0');
+      const currentM = String(now.getMinutes()).padStart(2, '0');
+      const currentTime = `${currentH}:${currentM}`;
+      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+      medicines.forEach((med) => {
+        if (med.paused || med.taken) return;
+        const [medH = '', medM = ''] = med.time.split(':');
+        const medTimeNorm = `${medH.padStart(2, '0')}:${medM.padStart(2, '0')}`;
+
+        if (medTimeNorm === currentTime) {
+          const fireKey = `${med.id}-${todayKey}-${currentTime}`;
+          if (!firedAlarms[fireKey]) {
+            setFiredAlarms((prev) => ({ ...prev, [fireKey]: true }));
+            triggerAlarm(med);
+          }
+        }
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [medicines, firedAlarms, triggerAlarm]);
+
   if (!profile) return <Setup language={language} onComplete={setProfile} />;
   const copy = (key: Parameters<typeof t>[1]) => t(language, key);
   const markTaken = (id: number) => setMedicines((current) => current.map((medicine) => medicine.id === id ? { ...medicine, taken: true } : medicine));
-  const deleteMedicine = (id: number) => setMedicines((current) => current.filter((medicine) => medicine.id !== id));
+  const deleteMedicine = (id: number) => {
+    cancelMedicineNotification(id);
+    setMedicines((current) => current.filter((medicine) => medicine.id !== id));
+  };
   const changeLanguage = () => setLanguage(language === 'en' ? 'hi' : 'en');
   const connectHardware = async () => { const disconnect = await connectBand((reading) => { setHeartRate(reading.hr); setBloodPressure(`${reading.sys}/${reading.dia}`); setTemperature(String(reading.temp)); setStepsToday(reading.steps); setWaterToday(reading.water); }); if (disconnect) { setBandConnected(true); setBandSetup(false); setToast(ui(language, 'Band connected')); } else { setToast(ui(language, 'Please use Chrome on Android')); } };
   const saveProfile = (updatedProfile: Profile) => { localStorage.setItem('arogyam-profile', JSON.stringify(updatedProfile)); setProfile(updatedProfile); setShowProfileEdit(false); setToast(ui(language, 'Your information was saved')); };
-  const resetProfile = () => { localStorage.removeItem('arogyam-profile'); setProfile(null); setShowProfileEdit(false); };
-  const currentPage = tab === 'home' ? <Home language={language} profile={profile} medicines={medicines} copy={copy} onTaken={markTaken} onEmergency={() => setShowEmergency(true)} waterToday={waterToday} setWaterToday={setWaterToday} stepsToday={stepsToday} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} onNavigate={setTab} /> : tab === 'medicines' ? <Medicines language={language} medicines={medicines} copy={copy} onTaken={markTaken} onDelete={deleteMedicine} onAdd={() => setShowAdd(true)} onToast={setToast} /> : tab === 'health' ? (bandSetup ? <BandSetup language={language} connected={bandConnected} onBack={() => setBandSetup(false)} onConnect={connectHardware} /> : <Health language={language} connected={bandConnected} onOpenSetup={() => setBandSetup(true)} onToast={setToast} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} stepsToday={stepsToday} waterToday={waterToday} setWaterToday={setWaterToday} profile={profile} />) : tab === 'ai' ? <AIHelp language={language} copy={copy} profile={profile} health={{ heartRate, bloodPressure, temperature, stepsToday, waterToday }} /> : <More language={language} profile={profile} largeText={largeText} setLargeText={setLargeText} onLanguage={changeLanguage} onEmergency={() => setShowEmergency(true)} onToast={setToast} onEditProfile={() => setShowProfileEdit(true)} onResetProfile={resetProfile} />;
-  return <div className={`app-frame ${largeText ? 'large-text' : ''}`}><div className="desktop-header"><Leaf size={22} /> AROGYAM <span>{ui(language, 'Your everyday health companion')}</span></div><div className="phone-shell"><header className="app-header"><div className="brand"><img src="/IMG_1169.jpg" alt="Arogyam logo" /><div><span>{copy('goodMorning')},</span><strong>{profile.name}</strong></div></div><div className="header-actions"><button className="language-toggle" onClick={changeLanguage}><Languages size={18} /> {language === 'en' ? 'हिं' : 'EN'}</button><div className="streak-pill"><Flame size={18} /> 0</div></div></header><main className="page-content">{currentPage}</main><nav className="bottom-nav">{([['home', Sun], ['medicines', AlarmClock], ['health', HeartPulse], ['ai', Sparkles], ['more', MoreHorizontal]] as const).map(([key, Icon]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={24} /><span>{copy(key === 'ai' ? 'aiHelp' : key)}</span></button>)}</nav></div>{showAdd && <AddMedicine language={language} onClose={() => setShowAdd(false)} onSave={(medicine) => { setMedicines((current) => [...current, { ...medicine, id: Date.now(), taken: false, paused: false }]); setShowAdd(false); setToast(ui(language, 'Medicine added')); }} />}{showProfileEdit && <ProfileEditor language={language} profile={profile} onClose={() => setShowProfileEdit(false)} onSave={saveProfile} onReset={resetProfile} />}{showEmergency && <Emergency language={language} profile={profile} onClose={() => setShowEmergency(false)} />}{toast && <div className="toast"><Check size={18} /> {toast}</div>}</div>;
+  const resetProfile = () => { cancelAllMedicineNotifications(); localStorage.removeItem('arogyam-profile'); setProfile(null); setShowProfileEdit(false); };
+
+  const handleSaveMedicine = (medicine: Omit<Medicine, 'id' | 'taken' | 'paused'>) => {
+    const id = Date.now();
+    const [h = '0', m = '0'] = medicine.time.split(':');
+    // Schedule native OS notification — fires daily at this time even when app is closed
+    scheduleMedicineNotification(id, medicine.name, medicine.dosage, ui(language, medicine.food), Number(h), Number(m));
+    setMedicines((current) => [...current, { ...medicine, id, taken: false, paused: false }]);
+    setShowAdd(false);
+    setToast(ui(language, 'Medicine added'));
+  };
+
+  const currentPage = tab === 'home' ? <Home language={language} profile={profile} medicines={medicines} copy={copy} onTaken={markTaken} onEmergency={() => setShowEmergency(true)} waterToday={waterToday} setWaterToday={setWaterToday} stepsToday={stepsToday} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} onNavigate={setTab} /> : tab === 'medicines' ? <Medicines language={language} medicines={medicines} copy={copy} onTaken={markTaken} onDelete={deleteMedicine} onAdd={() => setShowAdd(true)} onToast={setToast} onTestAlarm={handleTestAlarm} /> : tab === 'health' ? (bandSetup ? <BandSetup language={language} connected={bandConnected} onBack={() => setBandSetup(false)} onConnect={connectHardware} /> : <Health language={language} connected={bandConnected} onOpenSetup={() => setBandSetup(true)} onToast={setToast} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} stepsToday={stepsToday} waterToday={waterToday} setWaterToday={setWaterToday} profile={profile} />) : tab === 'ai' ? <AIHelp language={language} copy={copy} profile={profile} health={{ heartRate, bloodPressure, temperature, stepsToday, waterToday }} /> : <More language={language} profile={profile} largeText={largeText} setLargeText={setLargeText} onLanguage={changeLanguage} onEmergency={() => setShowEmergency(true)} onToast={setToast} onEditProfile={() => setShowProfileEdit(true)} onResetProfile={resetProfile} />;
+  return <div className={`app-frame ${largeText ? 'large-text' : ''}`}><div className="desktop-header"><Leaf size={22} /> AROGYAM <span>{ui(language, 'Your everyday health companion')}</span></div><div className="phone-shell"><header className="app-header"><div className="brand"><img src="/IMG_1169.jpg" alt="Arogyam logo" /><div><span>{copy('goodMorning')},</span><strong>{profile.name}</strong></div></div><div className="header-actions"><button className="language-toggle" onClick={changeLanguage}><Languages size={18} /> {language === 'en' ? 'हिं' : 'EN'}</button><div className="streak-pill"><Flame size={18} /> 0</div></div></header><main className="page-content">{currentPage}</main><nav className="bottom-nav">{([['home', Sun], ['medicines', AlarmClock], ['health', HeartPulse], ['ai', Sparkles], ['more', MoreHorizontal]] as const).map(([key, Icon]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={24} /><span>{copy(key === 'ai' ? 'aiHelp' : key)}</span></button>)}</nav></div>{showAdd && <AddMedicine language={language} onClose={() => setShowAdd(false)} onSave={handleSaveMedicine} />}{showProfileEdit && <ProfileEditor language={language} profile={profile} onClose={() => setShowProfileEdit(false)} onSave={saveProfile} onReset={resetProfile} />}{showEmergency && <Emergency language={language} profile={profile} onClose={() => setShowEmergency(false)} />}{activeAlarm && <div className="alarm-overlay"><div className="alarm-card"><div className="alarm-icon-ring"><Bell size={42} className="alarm-bell-icon" /></div><span className="alarm-badge"><AlarmClock size={16} /> {formatTime(activeAlarm.time)} · {ui(language, 'Medicine Reminder')}</span><h1 className="alarm-title">{ui(language, 'Time to take your medicine!')}</h1><div className="alarm-medicine-details"><strong className="alarm-med-name">{activeAlarm.name}</strong><div className="alarm-med-meta"><span className="alarm-chip dosage">{activeAlarm.dosage}</span><span className="alarm-chip food">{ui(language, activeAlarm.food)}</span></div></div><p className="alarm-help-text">{ui(language, 'Please take this medication as prescribed by your doctor.')}</p><div className="alarm-actions"><button className="primary-button full alarm-take-btn" onClick={() => handleTakeAlarmMedicine(activeAlarm.id)}><Check size={22} /> {ui(language, 'Mark taken')}</button><div className="alarm-secondary-actions"><button className="alarm-snooze-btn" onClick={() => handleSnoozeAlarm(activeAlarm, 5)}><AlarmClock size={18} /> {ui(language, 'Snooze 5 min')}</button><button className="alarm-dismiss-btn" onClick={stopCurrentAlarm}><X size={18} /> {ui(language, 'Dismiss')}</button></div></div></div></div>}{toast && <div className="toast"><Check size={18} /> {toast}</div>}</div>;
 }
 
 function Home({ language, profile, medicines, copy, onTaken, onEmergency, waterToday, setWaterToday, stepsToday, heartRate, bloodPressure, temperature, onNavigate }: LangProps & { profile: Profile; medicines: Medicine[]; copy: (key: Parameters<typeof t>[1]) => string; onTaken: (id: number) => void; onEmergency: () => void; waterToday: number; setWaterToday: React.Dispatch<React.SetStateAction<number>>; stepsToday: number; heartRate: number; bloodPressure: string; temperature: string; onNavigate: (tab: Tab) => void }) {
@@ -87,8 +233,8 @@ function Home({ language, profile, medicines, copy, onTaken, onEmergency, waterT
 function Vital({ language, label, value, unit, status }: LangProps & { label: string; value: string; unit: string; status: 'normal' | 'watch' }) { return <div className="vital"><span>{ui(language, label)}</span><strong className={status}>{value}</strong><small>{unit} · {status === 'normal' ? ui(language, 'Normal') : ui(language, 'Keep an eye')}</small></div>; }
 function Empty({ icon: Icon, text }: { icon: typeof AlarmClock; text: string }) { return <div className="empty-state"><Icon size={26} /><span>{text}</span></div>; }
 
-function Medicines({ language, medicines, copy, onTaken, onDelete, onAdd, onToast }: LangProps & { medicines: Medicine[]; copy: (key: Parameters<typeof t>[1]) => string; onTaken: (id: number) => void; onDelete: (id: number) => void; onAdd: () => void; onToast: (text: string) => void }) {
-  return <div className="sub-page"><div className="page-title-row"><div><span className="eyebrow"><Leaf size={16} /> {ui(language, 'Daily care')}</span><h1>{copy('medicines')}</h1></div><IconButton label={ui(language, 'Medicine history')} onClick={() => onToast(ui(language, 'History will appear after your first medicine is added'))}><CalendarDays size={22} /></IconButton></div><button className="primary-button full" onClick={onAdd}><Plus size={22} /> {copy('addMedicine')}</button><div className="adherence-card"><div><span>{ui(language, 'This week’s care')}</span><strong>0%</strong></div><div className="adherence-bars">{[0, 0, 0, 0, 0, 0, 0].map((height, index) => <i key={index} style={{ height: `${height}%` }} className={index === 6 ? 'today' : ''} />)}</div><small>{ui(language, 'Excellent consistency. Keep going.')}</small></div><div className="section-heading"><h2>{ui(language, 'My medicines')}</h2><span className="soft-label">{medicines.length} {ui(language, 'active')}</span></div>{medicines.length === 0 ? <Empty icon={Leaf} text={copy('noMedicines')} /> : <div className="medicine-list">{medicines.map((medicine) => <div className={`medicine-card ${medicine.paused ? 'paused' : ''}`} key={medicine.id}><div className="medicine-card-top"><div className="medicine-icon"><AlarmClock size={23} /></div><div><h2>{medicine.name}</h2><p>{medicine.dosage} · {ui(language, medicine.food)}</p></div><strong className="time-label">{formatTime(medicine.time)}</strong></div><div className="medicine-actions"><button onClick={() => onTaken(medicine.id)}><Check size={18} /> {medicine.taken ? ui(language, 'Taken today') : ui(language, 'Mark taken')}</button><button onClick={() => onToast(medicine.paused ? ui(language, 'Medicine resumed') : ui(language, 'Medicine paused'))}><Pause size={17} /> {medicine.paused ? ui(language, 'Resume') : ui(language, 'Pause')}</button><button className="danger-action" onClick={() => onDelete(medicine.id)}><Trash2 size={17} /> {ui(language, 'Delete')}</button></div></div>)}</div>}<div className="sound-notice"><Bell size={22} /><div><strong>{ui(language, 'Medicine alarm is ready')}</strong><p>{ui(language, 'Tap “Test alarm” once to allow sound and reminders.')}</p></div><button className="outline-button" onClick={() => onToast(ui(language, 'Test alarm'))}>{ui(language, 'Test alarm')}</button></div><section className="info-card"><Zap size={21} /><div><strong>{ui(language, 'How reminders work')}</strong><p>{ui(language, 'We check every second, alert you at the right time, and keep a simple history of your care.')}</p></div></section></div>;
+function Medicines({ language, medicines, copy, onTaken, onDelete, onAdd, onToast, onTestAlarm }: LangProps & { medicines: Medicine[]; copy: (key: Parameters<typeof t>[1]) => string; onTaken: (id: number) => void; onDelete: (id: number) => void; onAdd: () => void; onToast: (text: string) => void; onTestAlarm: () => void }) {
+  return <div className="sub-page"><div className="page-title-row"><div><span className="eyebrow"><Leaf size={16} /> {ui(language, 'Daily care')}</span><h1>{copy('medicines')}</h1></div><IconButton label={ui(language, 'Medicine history')} onClick={() => onToast(ui(language, 'History will appear after your first medicine is added'))}><CalendarDays size={22} /></IconButton></div><button className="primary-button full" onClick={onAdd}><Plus size={22} /> {copy('addMedicine')}</button><div className="adherence-card"><div><span>{ui(language, 'This week’s care')}</span><strong>0%</strong></div><div className="adherence-bars">{[0, 0, 0, 0, 0, 0, 0].map((height, index) => <i key={index} style={{ height: `${height}%` }} className={index === 6 ? 'today' : ''} />)}</div><small>{ui(language, 'Excellent consistency. Keep going.')}</small></div><div className="section-heading"><h2>{ui(language, 'My medicines')}</h2><span className="soft-label">{medicines.length} {ui(language, 'active')}</span></div>{medicines.length === 0 ? <Empty icon={Leaf} text={copy('noMedicines')} /> : <div className="medicine-list">{medicines.map((medicine) => <div className={`medicine-card ${medicine.paused ? 'paused' : ''}`} key={medicine.id}><div className="medicine-card-top"><div className="medicine-icon"><AlarmClock size={23} /></div><div><h2>{medicine.name}</h2><p>{medicine.dosage} · {ui(language, medicine.food)}</p></div><strong className="time-label">{formatTime(medicine.time)}</strong></div><div className="medicine-actions"><button onClick={() => onTaken(medicine.id)}><Check size={18} /> {medicine.taken ? ui(language, 'Taken today') : ui(language, 'Mark taken')}</button><button onClick={() => onToast(medicine.paused ? ui(language, 'Medicine resumed') : ui(language, 'Medicine paused'))}><Pause size={17} /> {medicine.paused ? ui(language, 'Resume') : ui(language, 'Pause')}</button><button className="danger-action" onClick={() => onDelete(medicine.id)}><Trash2 size={17} /> {ui(language, 'Delete')}</button></div></div>)}</div>}<div className="sound-notice"><Bell size={22} /><div><strong>{ui(language, 'Medicine alarm is ready')}</strong><p>{ui(language, 'Tap “Test alarm” once to allow sound and reminders.')}</p></div><button className="outline-button" onClick={onTestAlarm}>{ui(language, 'Test alarm')}</button></div><section className="info-card"><Zap size={21} /><div><strong>{ui(language, 'How reminders work')}</strong><p>{ui(language, 'We check every second, alert you at the right time, and keep a simple history of your care.')}</p></div></section></div>;
 }
 
 function AddMedicine({ language, onClose, onSave }: LangProps & { onClose: () => void; onSave: (medicine: Omit<Medicine, 'id' | 'taken' | 'paused'>) => void }) {
