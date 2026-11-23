@@ -53,43 +53,60 @@ Deno.serve(async (req: Request) => {
       stepsToday: health.stepsToday ?? 0,
       waterToday: health.waterToday ?? 0,
     });
-    const apiKey = Deno.env.get("GEMINI_API_KEY")?.trim();
+    // Keep Gemini credentials in Supabase Function secrets, never in the app bundle.
+    // GEMINI_API_KEYS accepts comma- or newline-separated backup keys; the singular
+    // variable remains supported for existing deployments.
+    const apiKeys = [
+      ...(Deno.env.get("GEMINI_API_KEYS") ?? "").split(/[\s,]+/),
+      Deno.env.get("GEMINI_API_KEY") ?? "",
+    ].map((key) => key.trim()).filter(Boolean);
 
-    if (!apiKey) {
+    if (apiKeys.length === 0) {
       return jsonResponse({ error: "AI_NOT_CONFIGURED" }, 503);
     }
 
     const prompt = `You are Arogyam, a warm health companion. Reply in ${language}. Use the user's details only to make the answer relevant. Give exactly one short, sweet sentence in plain language, under 25 words. Do not diagnose, prescribe, or invent readings. If the user asks about an emergency or dangerous reading, tell them to contact a doctor or emergency service. User details: ${context}. Question: ${message}`;
-    const candidateModels = [
-      "gemini-3.5-flash-lite",
-      "gemini-3.8-flash",
-      "gemini-3.7-flash",
-    ];
+    const candidateModels = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"];
     let reply = "";
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 17_000);
 
-    for (const model of candidateModels) {
-      try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 1000 } }),
-        });
-        if (response.ok) {
-          const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }> };
-          const parts = data.candidates?.[0]?.content?.parts ?? [];
-          const textPart = parts.find((p) => p.text && !p.thought)?.text || parts[0]?.text;
-          const candidateText = textPart?.trim();
-          if (candidateText) {
-            reply = candidateText;
-            break;
+    try {
+      // Try each key against the available models, so quota or key failures can
+      // fall through to another configured credential without exposing details.
+      for (const apiKey of apiKeys) {
+        for (const model of candidateModels) {
+          if (controller.signal.aborted) break;
+          try {
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+              body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 1000 } }),
+              signal: controller.signal,
+            });
+            if (response.ok) {
+              const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }> };
+              const parts = data.candidates?.[0]?.content?.parts ?? [];
+              const textPart = parts.find((p) => p.text && !p.thought)?.text || parts[0]?.text;
+              const candidateText = textPart?.trim();
+              if (candidateText) {
+                reply = candidateText;
+                break;
+              }
+            } else {
+              // Do not log provider response bodies: they can contain request data.
+              console.error(`Gemini request failed for ${model}`, response.status);
+            }
+          } catch (err) {
+            if (!controller.signal.aborted) {
+              console.error(`Gemini fetch failed for ${model}`, err instanceof Error ? err.message : "network error");
+            }
           }
-        } else {
-          const providerError = await response.text();
-          console.error(`Gemini model ${model} failed`, response.status, providerError.slice(0, 300));
         }
-      } catch (err) {
-        console.error(`Gemini fetch error for ${model}`, err instanceof Error ? err.message : "network error");
+        if (reply || controller.signal.aborted) break;
       }
+    } finally {
+      clearTimeout(timeout);
     }
 
     if (!reply) {
