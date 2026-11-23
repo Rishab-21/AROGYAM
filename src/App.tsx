@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { User } from '@supabase/supabase-js';
 import { Capacitor } from '@capacitor/core';
 import {
-  Activity, AlarmClock, Apple, ArrowRight, Bell, Bluetooth, CalendarDays, Check, ChevronRight, CircleHelp,
+  Activity, AlarmClock, Apple, ArrowRight, Bell, Bluetooth, CalendarDays, Check, ChevronRight, CircleHelp, Cloud,
   Droplets, Flame, HeartPulse, Hospital, Languages, Leaf, MapPin, Menu, Mic, MoreHorizontal, Pause, Phone,
   Play, Plus, Settings, ShieldAlert, Sparkles, Sun, Target, Trash2, Utensils,
   Watch, Weight, X, Zap, Save, RotateCcw
 } from 'lucide-react';
 import { connectBand } from '@/lib/bluetooth';
+import { deleteCloudRecord, loadCloudData, saveCloudData, type CloudDailyHealth } from '@/lib/cloud-sync';
+import { supabase } from '@/lib/supabase';
+import CloudAccountModal from '@/components/CloudAccountModal';
+import PhoneAuthScreen from '@/components/PhoneAuthScreen';
+import SplashScreen from '@/components/SplashScreen';
 import { isNativeAndroid, listenForPhoneSteps, listenForPhoneWater, startPhoneStepTracking, updatePhoneWidget } from '@/lib/phone-health';
 import { Language, t, ui } from '@/i18n';
 import {
@@ -73,6 +79,33 @@ function profileNeedsDetails(profile: Profile): boolean {
 function speak(text: string): void { if ('speechSynthesis' in window) { window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } }
 function formatTime(time: string): string { const [hourString, minute] = time.split(':'); const hour = Number(hourString); return `${hour % 12 || 12}:${minute} ${hour >= 12 ? 'PM' : 'AM'}`; }
 
+function mergeLocalRecords<T extends { id: number }>(device: T[], cloud: T[]): T[] {
+  const merged = [...cloud];
+  const ids = new Set(cloud.map((item) => item.id));
+  let nextId = Math.max(Date.now(), ...Array.from(ids, (id) => id + 1));
+  for (const item of device) {
+    const existing = merged.find((candidate) => candidate.id === item.id);
+    if (!existing) { merged.push(item); ids.add(item.id); continue; }
+    if (JSON.stringify(existing) === JSON.stringify(item)) continue;
+    while (ids.has(nextId)) nextId += 1;
+    merged.push({ ...item, id: nextId });
+    ids.add(nextId);
+    nextId += 1;
+  }
+  return merged.sort((a, b) => a.id - b.id);
+}
+
+function mergeProfileData(device: Profile, cloud: Profile): Profile {
+  return {
+    name: device.name || cloud.name, age: device.age || cloud.age, gender: device.gender || cloud.gender,
+    height: device.height || cloud.height, weight: device.weight || cloud.weight,
+    conditions: [...new Set([...cloud.conditions, ...device.conditions])], food: device.food || cloud.food,
+    steps: device.steps || cloud.steps || 10000, water: device.water || cloud.water,
+    nominee: device.nominee || cloud.nominee, relationship: device.relationship || cloud.relationship,
+    phone: device.phone || cloud.phone,
+  };
+}
+
 const IconButton = ({ label, children, onClick }: { label: string; children: React.ReactNode; onClick?: () => void }) => <button className="icon-button" aria-label={label} onClick={onClick}>{children}</button>;
 const ProgressRing = ({ value, color, icon: Icon, label }: { value: number; color: string; icon: typeof Droplets; label: string }) => <div className="ring-card"><div className="ring" style={{ '--progress': `${Math.min(value, 100)}%`, '--ring-color': color } as React.CSSProperties}><div className="ring-inner"><Icon size={20} /></div></div><strong>{Math.round(value)}%</strong><span>{label}</span></div>;
 
@@ -110,7 +143,7 @@ function Setup({ language, onComplete }: { language: Language; onComplete: (prof
     setProfile((current) => ({ ...current, height: value === '' && (part === 'feet' ? !heightRemainderInches : !heightFeet) ? '' : String(Math.round(total * 2.54)) }));
   };
   const finish = () => { const completedProfile = { ...profile, steps: profile.steps || 10000 }; localStorage.setItem('arogyam-profile', JSON.stringify(completedProfile)); onComplete(completedProfile); };
-  return <div className="setup-page"><div className="setup-top"><img src="/IMG_1169.jpg" alt="Arogyam" /><div className="step-count">{step + 1} / {fields.length}</div></div><div className="setup-progress"><span style={{ width: `${((step + 1) / fields.length) * 100}%` }} /></div><main className="setup-content"><span className="eyebrow"><Leaf size={16} /> AROGYAM</span><h1>{t(language, 'setupTitle')}</h1><p className="muted">{t(language, 'setupSub')}</p><section className="question-card"><h2>{field.title}</h2>{field.key === 'conditions' ? <ConditionPicker language={language} value={profile.conditions} onChange={(conditions) => setProfile((current) => ({ ...current, conditions }))} /> : field.type === 'choice' ? <div className="choice-grid">{field.options?.map((option) => <button key={option} className={`choice ${field.value === option ? 'selected' : ''}`} onClick={() => setValue(option)}>{field.value === option && <Check size={18} />}{ui(language, option)}</button>)}</div> : field.key === 'height' ? <div className="unit-entry"><UnitSelect label={ui(language, 'Height unit')} value={heightUnit} options={[{ value: 'cm', label: ui(language, 'Centimeters (cm)') }, { value: 'ft', label: ui(language, 'Feet & inches') }]} onChange={setHeightUnit} />{heightUnit === 'cm' ? <div className="input-unit-wrap"><input autoFocus value={profile.height} placeholder={ui(language, 'e.g. 170')} type="number" min="1" step="1" onChange={(event) => setProfile((current) => ({ ...current, height: event.target.value }))} /><span className="input-unit-badge">cm</span></div> : <div className="measurement-pair"><label><span>{ui(language, 'Feet')}</span><input autoFocus type="number" min="0" max="8" step="1" value={profile.height ? String(heightFeet) : ''} placeholder="5" onChange={(event) => setHeightPart('feet', event.target.value)} /></label><label><span>{ui(language, 'Inches')}</span><input type="number" min="0" max="11" step="1" value={profile.height ? String(heightRemainderInches) : ''} placeholder="6" onChange={(event) => setHeightPart('inches', event.target.value)} /></label></div>}<p className="unit-hint">{ui(language, 'Height conversion hint')}</p></div> : field.key === 'water' ? <div className="unit-entry"><UnitSelect label={ui(language, 'Water unit')} value={waterUnit} options={[{ value: 'ml', label: ui(language, 'Millilitres (ml)') }, { value: 'L', label: ui(language, 'Litres (L)') }]} onChange={setWaterUnit} /><div className="input-unit-wrap"><input autoFocus value={field.value} placeholder={field.placeholder} type="number" min="0" step={waterUnit === 'L' ? '0.1' : '50'} onChange={(event) => setValue(event.target.value)} /><span className="input-unit-badge">{waterUnit}</span></div><p className="unit-hint">{ui(language, 'Water conversion hint')}</p></div> : ('unit' in field && field.unit ? <div className="input-unit-wrap"><input autoFocus value={field.value} placeholder={field.placeholder} type={field.type} onChange={(event) => setValue(event.target.value)} /><span className="input-unit-badge">{field.unit}</span></div> : <input autoFocus value={field.value} placeholder={field.placeholder} type={field.type} onChange={(event) => setValue(event.target.value)} />)}<p className="helper"><ShieldAlert size={16} /> {ui(language, 'Your answers stay on this phone.')}</p></section><button className="primary-button full" onClick={() => step < fields.length - 1 ? setStep(step + 1) : finish()}>{step < fields.length - 1 ? t(language, 'continue') : t(language, 'save')}<ArrowRight size={20} /></button><button className="text-button" onClick={finish}>{t(language, 'skip')}</button></main></div>;
+  return <div className="setup-page"><div className="setup-top"><img src="/IMG_1169.jpg" alt="Arogyam" /><div className="step-count">{step + 1} / {fields.length}</div></div><div className="setup-progress"><span style={{ width: `${((step + 1) / fields.length) * 100}%` }} /></div><main className="setup-content"><span className="eyebrow"><Leaf size={16} /> AROGYAM</span><h1>{t(language, 'setupTitle')}</h1><p className="muted">{t(language, 'setupSub')}</p><section className="question-card"><h2>{field.title}</h2>{field.key === 'conditions' ? <ConditionPicker language={language} value={profile.conditions} onChange={(conditions) => setProfile((current) => ({ ...current, conditions }))} /> : field.type === 'choice' ? <div className="choice-grid">{field.options?.map((option) => <button key={option} className={`choice ${field.value === option ? 'selected' : ''}`} onClick={() => setValue(option)}>{field.value === option && <Check size={18} />}{ui(language, option)}</button>)}</div> : field.key === 'height' ? <div className="unit-entry"><UnitSelect label={ui(language, 'Height unit')} value={heightUnit} options={[{ value: 'cm', label: ui(language, 'Centimeters (cm)') }, { value: 'ft', label: ui(language, 'Feet & inches') }]} onChange={setHeightUnit} />{heightUnit === 'cm' ? <div className="input-unit-wrap"><input autoFocus value={profile.height} placeholder={ui(language, 'e.g. 170')} type="number" min="1" step="1" onChange={(event) => setProfile((current) => ({ ...current, height: event.target.value }))} /><span className="input-unit-badge">cm</span></div> : <div className="measurement-pair"><label><span>{ui(language, 'Feet')}</span><input autoFocus type="number" min="0" max="8" step="1" value={profile.height ? String(heightFeet) : ''} placeholder="5" onChange={(event) => setHeightPart('feet', event.target.value)} /></label><label><span>{ui(language, 'Inches')}</span><input type="number" min="0" max="11" step="1" value={profile.height ? String(heightRemainderInches) : ''} placeholder="6" onChange={(event) => setHeightPart('inches', event.target.value)} /></label></div>}<p className="unit-hint">{ui(language, 'Height conversion hint')}</p></div> : field.key === 'water' ? <div className="unit-entry"><UnitSelect label={ui(language, 'Water unit')} value={waterUnit} options={[{ value: 'ml', label: ui(language, 'Millilitres (ml)') }, { value: 'L', label: ui(language, 'Litres (L)') }]} onChange={setWaterUnit} /><div className="input-unit-wrap"><input autoFocus value={field.value} placeholder={field.placeholder} type="number" min="0" step={waterUnit === 'L' ? '0.1' : '50'} onChange={(event) => setValue(event.target.value)} /><span className="input-unit-badge">{waterUnit}</span></div><p className="unit-hint">{ui(language, 'Water conversion hint')}</p></div> : ('unit' in field && field.unit ? <div className="input-unit-wrap"><input autoFocus value={field.value} placeholder={field.placeholder} type={field.type} onChange={(event) => setValue(event.target.value)} /><span className="input-unit-badge">{field.unit}</span></div> : <input autoFocus value={field.value} placeholder={field.placeholder} type={field.type} onChange={(event) => setValue(event.target.value)} />)}<p className="helper"><ShieldAlert size={16} /> {ui(language, 'Your answers are saved to your account.')}</p></section><button className="primary-button full" onClick={() => step < fields.length - 1 ? setStep(step + 1) : finish()}>{step < fields.length - 1 ? t(language, 'continue') : t(language, 'save')}<ArrowRight size={20} /></button><button className="text-button" onClick={finish}>{t(language, 'skip')}</button></main></div>;
 }
 
 function App() {
@@ -135,8 +168,97 @@ function App() {
   const [phoneReady, setPhoneReady] = useState(false);
   const [heartRate, setHeartRate] = useState(0); const [bloodPressure, setBloodPressure] = useState('0/0'); const [temperature, setTemperature] = useState('0');
   const [toast, setToast] = useState('');
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [splashComplete, setSplashComplete] = useState(false);
+  const [entryConfirmed, setEntryConfirmed] = useState(false);
+  const [cloudSyncEnabled, setCloudSyncEnabled] = useState(false);
+  const [cloudDataReady, setCloudDataReady] = useState(false);
+  const [pendingCloudData, setPendingCloudData] = useState<Awaited<ReturnType<typeof loadCloudData>> | null>(null);
+  const [showAccountModal, setShowAccountModal] = useState(false);
   const [activeAlarm, setActiveAlarm] = useState<Medicine | null>(null);
   const [firedAlarms, setFiredAlarms] = useState<Record<string, boolean>>({});
+  const appDataRef = useRef({ profile, medicines, appointments, stepsToday, waterToday, heartRate, bloodPressure, temperature, stepSource });
+  appDataRef.current = { profile, medicines, appointments, stepsToday, waterToday, heartRate, bloodPressure, temperature, stepSource };
+  const applyDailyHealth = useCallback((reading: CloudDailyHealth) => {
+    setStepsToday(reading.steps); setWaterToday(reading.water);
+    setHeartRate(reading.heartRate ?? 0);
+    setBloodPressure(reading.systolic !== null && reading.diastolic !== null ? `${reading.systolic}/${reading.diastolic}` : '0/0');
+    setTemperature(reading.temperature == null ? '0' : String(reading.temperature));
+    setStepSource(reading.source === 'band' || reading.source === 'phone' ? reading.source : 'unavailable');
+    localStorage.setItem('arogyam-water', JSON.stringify({ date: reading.date, amount: reading.water }));
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) { setAuthReady(true); return; }
+    let active = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      setCloudUser(data.session?.user ?? null);
+      setAuthReady(true);
+    }).catch(() => { if (active) setAuthReady(true); });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!active) return;
+      setCloudUser(session?.user ?? null);
+      if (event === 'SIGNED_OUT') { setEntryConfirmed(false); setCloudDataReady(false); setCloudSyncEnabled(false); setPendingCloudData(null); }
+    });
+    return () => { active = false; subscription.unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+    const timer = window.setTimeout(() => setSplashComplete(true), 1800);
+    return () => window.clearTimeout(timer);
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!cloudUser || !entryConfirmed) { setCloudDataReady(false); return; }
+    let active = true;
+    void loadCloudData(cloudUser.id, localDayKey()).then((data) => {
+      if (!active) return;
+      const savedOwnerId = localStorage.getItem('arogyam-cloud-owner-id');
+      const localData = appDataRef.current;
+      const hasUnclaimedDeviceData = Boolean(localData.profile?.name || localData.profile?.conditions.length || localData.medicines.length || localData.appointments.length || localData.stepsToday || localData.waterToday || localData.heartRate || localData.bloodPressure !== '0/0' || localData.temperature !== '0');
+      if (savedOwnerId && savedOwnerId === cloudUser.id) {
+        setProfile(data.profile); setMedicines(data.medicines); setAppointments(data.appointments);
+        if (data.dailyHealth) applyDailyHealth(data.dailyHealth);
+        setCloudSyncEnabled(true); setCloudDataReady(true);
+      } else if (!savedOwnerId && hasUnclaimedDeviceData) {
+        setPendingCloudData(data);
+        setCloudSyncEnabled(false); setCloudDataReady(false);
+      } else if (savedOwnerId && savedOwnerId !== cloudUser.id && hasUnclaimedDeviceData) {
+        setPendingCloudData(data);
+        setCloudSyncEnabled(false); setCloudDataReady(false);
+      } else {
+        setProfile(data.profile); setMedicines(data.medicines); setAppointments(data.appointments);
+        if (data.dailyHealth) applyDailyHealth(data.dailyHealth);
+        localStorage.setItem('arogyam-cloud-owner-id', cloudUser.id);
+        setCloudSyncEnabled(true); setCloudDataReady(true);
+      }
+    }).catch((error: unknown) => {
+      if (active) setToast(error instanceof Error ? error.message : 'Could not load your synced data.');
+    });
+    return () => { active = false; };
+  }, [cloudUser?.id, entryConfirmed, applyDailyHealth]);
+
+  useEffect(() => {
+    if (!cloudUser || !cloudSyncEnabled || !cloudDataReady || !profile) return;
+    const timer = window.setTimeout(() => {
+      const [systolic, diastolic] = bloodPressure.split('/').map(Number);
+      const dailyHealth: CloudDailyHealth = {
+        date: localDayKey(), heartRate: heartRate || null,
+        systolic: Number.isFinite(systolic) && systolic > 0 ? systolic : null,
+        diastolic: Number.isFinite(diastolic) && diastolic > 0 ? diastolic : null,
+        temperature: Number(temperature) > 0 ? Number(temperature) : null,
+        steps: stepsToday, water: waterToday, sleep: null, distance: null,
+        source: stepSource === 'band' ? 'band' : stepSource === 'phone' ? 'phone' : 'manual',
+      };
+      void saveCloudData(cloudUser.id, profile, medicines, appointments, dailyHealth).catch((error: unknown) => {
+        setToast(error instanceof Error ? error.message : 'Could not sync your data.');
+      });
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [cloudUser?.id, cloudSyncEnabled, cloudDataReady, profile, medicines, appointments, stepsToday, waterToday, heartRate, bloodPressure, temperature, stepSource]);
 
   // ─── Native notification setup (runs once on mount) ─────────────────────────
   useEffect(() => {
@@ -160,6 +282,7 @@ function App() {
 
   useEffect(() => { localStorage.setItem('arogyam-medicines', JSON.stringify(medicines)); }, [medicines]);
   useEffect(() => { localStorage.setItem('arogyam-appointments', JSON.stringify(appointments)); }, [appointments]);
+  useEffect(() => { if (profile) localStorage.setItem('arogyam-profile', JSON.stringify(profile)); }, [profile]);
   useEffect(() => { localStorage.setItem('arogyam-large-text', largeText ? '1' : '0'); }, [largeText]);
   useEffect(() => {
     if (profile && profileNeedsDetails(profile) && sessionStorage.getItem('arogyam-profile-prompt-dismissed') !== '1') setShowProfilePrompt(true);
@@ -302,18 +425,60 @@ function App() {
     return () => window.clearInterval(timer);
   }, [medicines, firedAlarms, triggerAlarm]);
 
-  if (!profile) return <Setup language={language} onComplete={setProfile} />;
   const copy = (key: Parameters<typeof t>[1]) => t(language, key);
   const markTaken = (id: number) => setMedicines((current) => current.map((medicine) => medicine.id === id ? { ...medicine, taken: true } : medicine));
   const deleteMedicine = (id: number) => {
     cancelMedicineNotification(id);
     setMedicines((current) => current.filter((medicine) => medicine.id !== id));
+    if (cloudUser && cloudSyncEnabled) void deleteCloudRecord('medicines', cloudUser.id, id).catch((error: unknown) => setToast(error instanceof Error ? error.message : 'Could not sync this deletion.'));
   };
   const changeLanguage = () => setLanguage(language === 'en' ? 'hi' : 'en');
   const connectHardware = async () => { const disconnect = await connectBand((reading) => { setHeartRate(reading.hr); setBloodPressure(`${reading.sys}/${reading.dia}`); setTemperature(String(reading.temp)); setStepsToday(reading.steps); setWaterToday(reading.water); setStepSource('band'); }); if (disconnect) { bandConnectedRef.current = true; setBandConnected(true); setStepSource('band'); setBandSetup(false); setToast(ui(language, 'Band connected')); } else { setToast(ui(language, 'Please use Chrome on Android')); } };
   const addWater = () => setWaterToday((value) => { const next = value + 250; localStorage.setItem('arogyam-water', JSON.stringify({ date: localDayKey(), amount: next })); return next; });
   const saveProfile = (updatedProfile: Profile) => { const normalized = { ...updatedProfile, steps: Number(updatedProfile.steps) || 10000 }; localStorage.setItem('arogyam-profile', JSON.stringify(normalized)); setProfile(normalized); setShowProfileEdit(false); setToast(ui(language, 'Your information was saved')); };
   const saveAppointment = (appointment: Appointment) => { setAppointments((current) => [...current.filter((item) => item.id !== appointment.id), appointment].sort((a, b) => new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime())); setShowAppointments(false); setToast(ui(language, 'Appointment saved')); };
+  const deleteAppointment = (id: number) => {
+    setAppointments((current) => current.filter((appointment) => appointment.id !== id));
+    if (cloudUser && cloudSyncEnabled) void deleteCloudRecord('appointments', cloudUser.id, id).catch((error: unknown) => setToast(error instanceof Error ? error.message : 'Could not sync this deletion.'));
+  };
+  const importDeviceData = async () => {
+    if (!cloudUser || !pendingCloudData) return;
+    const local = appDataRef.current;
+    const mergedProfile = local.profile && pendingCloudData.profile ? mergeProfileData(local.profile, pendingCloudData.profile) : local.profile ?? pendingCloudData.profile;
+    if (!mergedProfile) throw new Error('Finish your health profile before saving it to this account.');
+    const mergedMedicines = mergeLocalRecords(local.medicines, pendingCloudData.medicines);
+    const mergedAppointments = mergeLocalRecords(local.appointments, pendingCloudData.appointments);
+    const remoteHealth = pendingCloudData.dailyHealth;
+    const [systolic, diastolic] = local.bloodPressure.split('/').map(Number);
+    const mergedHealth: CloudDailyHealth = {
+      date: localDayKey(),
+      heartRate: local.heartRate || remoteHealth?.heartRate || null,
+      systolic: systolic > 0 ? systolic : remoteHealth?.systolic ?? null,
+      diastolic: diastolic > 0 ? diastolic : remoteHealth?.diastolic ?? null,
+      temperature: Number(local.temperature) > 0 ? Number(local.temperature) : remoteHealth?.temperature ?? null,
+      steps: Math.max(local.stepsToday, remoteHealth?.steps ?? 0),
+      water: Math.max(local.waterToday, remoteHealth?.water ?? 0),
+      sleep: remoteHealth?.sleep ?? null, distance: remoteHealth?.distance ?? null,
+      source: local.stepSource === 'band' ? 'band' : local.stepSource === 'phone' ? 'phone' : remoteHealth?.source ?? 'manual',
+    };
+    await saveCloudData(cloudUser.id, mergedProfile, mergedMedicines, mergedAppointments, mergedHealth);
+    localStorage.setItem('arogyam-cloud-owner-id', cloudUser.id);
+    setProfile(mergedProfile); setMedicines(mergedMedicines); setAppointments(mergedAppointments);
+    setPendingCloudData(null); setCloudSyncEnabled(true); setCloudDataReady(true);
+  };
+  const useAccountData = () => {
+    if (!cloudUser || !pendingCloudData) return;
+    if (pendingCloudData.profile) localStorage.setItem('arogyam-profile', JSON.stringify(pendingCloudData.profile));
+    else localStorage.removeItem('arogyam-profile');
+    localStorage.setItem('arogyam-medicines', JSON.stringify(pendingCloudData.medicines));
+    localStorage.setItem('arogyam-appointments', JSON.stringify(pendingCloudData.appointments));
+    if (pendingCloudData.dailyHealth) applyDailyHealth(pendingCloudData.dailyHealth);
+    else { setStepsToday(0); setWaterToday(0); setHeartRate(0); setBloodPressure('0/0'); setTemperature('0'); }
+    localStorage.setItem('arogyam-water', JSON.stringify({ date: localDayKey(), amount: pendingCloudData.dailyHealth?.water ?? 0 }));
+    localStorage.setItem('arogyam-cloud-owner-id', cloudUser.id);
+    setProfile(pendingCloudData.profile); setMedicines(pendingCloudData.medicines); setAppointments(pendingCloudData.appointments);
+    setPendingCloudData(null); setCloudSyncEnabled(true); setCloudDataReady(true);
+  };
   const resetProfile = () => { cancelAllMedicineNotifications(); localStorage.removeItem('arogyam-profile'); setProfile(null); setShowProfileEdit(false); };
 
   const handleSaveMedicine = async (medicine: Omit<Medicine, 'id' | 'taken' | 'paused'>) => {
@@ -334,8 +499,22 @@ function App() {
     setToast(ui(language, remindersAllowed ? 'Medicine added' : 'Medicine added, but reminders need notification and alarm access in Android settings.'));
   };
 
-  const currentPage = tab === 'home' ? <Home language={language} profile={profile} medicines={medicines} appointments={appointments} copy={copy} onTaken={markTaken} onEmergency={() => setShowEmergency(true)} onManageAppointments={() => setShowAppointments(true)} waterToday={waterToday} onAddWater={addWater} stepsToday={stepsToday} stepSource={stepSource} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} onNavigate={setTab} /> : tab === 'medicines' ? <Medicines language={language} medicines={medicines} copy={copy} onTaken={markTaken} onDelete={deleteMedicine} onAdd={() => setShowAdd(true)} onToast={setToast} onTestAlarm={handleTestAlarm} /> : tab === 'health' ? (bandSetup ? <BandSetup language={language} connected={bandConnected} onBack={() => setBandSetup(false)} onConnect={connectHardware} /> : <Health language={language} connected={bandConnected} onOpenSetup={() => setBandSetup(true)} onToast={setToast} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} stepsToday={stepsToday} stepSource={stepSource} waterToday={waterToday} onAddWater={addWater} profile={profile} />) : tab === 'ai' ? <AIHelp language={language} copy={copy} profile={profile} health={{ heartRate, bloodPressure, temperature, stepsToday, waterToday }} /> : <More language={language} profile={profile} largeText={largeText} setLargeText={setLargeText} onLanguage={changeLanguage} onEmergency={() => setShowEmergency(true)} onToast={setToast} onEditProfile={() => setShowProfileEdit(true)} onResetProfile={resetProfile} />;
-  return <div className={`app-frame ${largeText ? 'large-text' : ''}`}><div className="desktop-header"><Leaf size={22} /> AROGYAM <span>{ui(language, 'Your everyday health companion')}</span></div><div className="phone-shell"><header className="app-header"><div className="brand"><img src="/IMG_1169.jpg" alt="Arogyam logo" /><div><span>{copy('goodMorning')},</span><strong>{profile.name}</strong></div></div><div className="header-actions"><button className="language-toggle" onClick={changeLanguage}><Languages size={18} /> {language === 'en' ? 'हिं' : 'EN'}</button><div className="streak-pill"><Flame size={18} /> 0</div></div></header><main className="page-content">{currentPage}</main><nav className="bottom-nav">{([['home', Sun], ['medicines', AlarmClock], ['health', HeartPulse], ['ai', Sparkles], ['more', MoreHorizontal]] as const).map(([key, Icon]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={24} /><span>{copy(key === 'ai' ? 'aiHelp' : key)}</span></button>)}</nav></div>{showAdd && <AddMedicine language={language} onClose={() => setShowAdd(false)} onSave={handleSaveMedicine} />}{showProfileEdit && <ProfileEditor language={language} profile={profile} onClose={() => setShowProfileEdit(false)} onSave={saveProfile} onReset={resetProfile} />}{showAppointments && <AppointmentManager language={language} appointments={appointments} onClose={() => setShowAppointments(false)} onSave={saveAppointment} onDelete={(id) => setAppointments((current) => current.filter((item) => item.id !== id))} />}{showProfilePrompt && <ProfileCompletionPrompt language={language} onComplete={() => { setShowProfilePrompt(false); setShowProfileEdit(true); }} onLater={() => { sessionStorage.setItem('arogyam-profile-prompt-dismissed', '1'); setShowProfilePrompt(false); }} />}{showEmergency && <Emergency language={language} profile={profile} onClose={() => setShowEmergency(false)} />}{activeAlarm && <div className="alarm-overlay"><div className="alarm-card"><div className="alarm-icon-ring"><Bell size={42} className="alarm-bell-icon" /></div><span className="alarm-badge"><AlarmClock size={16} /> {formatTime(activeAlarm.time)} · {ui(language, 'Medicine Reminder')}</span><h1 className="alarm-title">{ui(language, 'Time to take your medicine!')}</h1><div className="alarm-medicine-details"><strong className="alarm-med-name">{activeAlarm.name}</strong><div className="alarm-med-meta"><span className="alarm-chip dosage">{activeAlarm.dosage}</span><span className="alarm-chip food">{ui(language, activeAlarm.food)}</span></div></div><p className="alarm-help-text">{ui(language, 'Please take this medication as prescribed by your doctor.')}</p><div className="alarm-actions"><button className="primary-button full alarm-take-btn" onClick={() => handleTakeAlarmMedicine(activeAlarm.id)}><Check size={22} /> {ui(language, 'Mark taken')}</button><div className="alarm-secondary-actions"><button className="alarm-snooze-btn" onClick={() => handleSnoozeAlarm(activeAlarm, 5)}><AlarmClock size={18} /> {ui(language, 'Snooze 5 min')}</button><button className="alarm-dismiss-btn" onClick={stopCurrentAlarm}><X size={18} /> {ui(language, 'Dismiss')}</button></div></div></div></div>}{toast && <div className="toast"><Check size={18} /> {toast}</div>}</div>;
+  if (!authReady || !splashComplete) return <SplashScreen />;
+  if (!cloudUser) return <PhoneAuthScreen user={null} onContinue={() => setEntryConfirmed(true)} onUseAnotherAccount={() => {}} />;
+  if (!entryConfirmed) return <PhoneAuthScreen user={cloudUser} onContinue={() => setEntryConfirmed(true)} onUseAnotherAccount={() => { void supabase?.auth.signOut(); }} />;
+  if (pendingCloudData) return <main className="auth-page"><section className="auth-card auth-data-choice">
+    <img className="auth-logo" src="/IMG_1169.jpg" alt="Arogyam" />
+    <span className="auth-kicker"><Cloud size={15} /> ACCOUNT DATA</span>
+    <h1>Choose your health data</h1>
+    <p className="auth-subtitle">This device has saved health information. Choose whether to merge it with {cloudUser.phone || 'your account'} or use the data already in this account. The existing account data stays in Supabase.</p>
+    <button className="primary-button full auth-submit" onClick={() => void importDeviceData().catch((error: unknown) => setToast(error instanceof Error ? error.message : 'Could not save your data.'))}>Merge this device into my account <ArrowRight size={19} /></button>
+    <button className="outline-button full" onClick={useAccountData}>Use account data on this device</button>
+  </section></main>;
+  if (!cloudDataReady) return <SplashScreen />;
+  if (!profile) return <Setup language={language} onComplete={setProfile} />;
+
+  const currentPage = tab === 'home' ? <Home language={language} profile={profile} medicines={medicines} appointments={appointments} copy={copy} onTaken={markTaken} onEmergency={() => setShowEmergency(true)} onManageAppointments={() => setShowAppointments(true)} waterToday={waterToday} onAddWater={addWater} stepsToday={stepsToday} stepSource={stepSource} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} onNavigate={setTab} /> : tab === 'medicines' ? <Medicines language={language} medicines={medicines} copy={copy} onTaken={markTaken} onDelete={deleteMedicine} onAdd={() => setShowAdd(true)} onToast={setToast} onTestAlarm={handleTestAlarm} /> : tab === 'health' ? (bandSetup ? <BandSetup language={language} connected={bandConnected} onBack={() => setBandSetup(false)} onConnect={connectHardware} /> : <Health language={language} connected={bandConnected} onOpenSetup={() => setBandSetup(true)} onToast={setToast} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} stepsToday={stepsToday} stepSource={stepSource} waterToday={waterToday} onAddWater={addWater} profile={profile} />) : tab === 'ai' ? <AIHelp language={language} copy={copy} profile={profile} health={{ heartRate, bloodPressure, temperature, stepsToday, waterToday }} /> : <More language={language} profile={profile} largeText={largeText} setLargeText={setLargeText} onLanguage={changeLanguage} onEmergency={() => setShowEmergency(true)} onToast={setToast} onEditProfile={() => setShowProfileEdit(true)} onResetProfile={resetProfile} accountLabel={cloudUser?.phone ?? null} syncEnabled={cloudSyncEnabled} onManageAccount={() => setShowAccountModal(true)} />;
+  return <div className={`app-frame ${largeText ? 'large-text' : ''}`}><div className="desktop-header"><Leaf size={22} /> AROGYAM <span>{ui(language, 'Your everyday health companion')}</span></div><div className="phone-shell"><header className="app-header"><div className="brand"><img src="/IMG_1169.jpg" alt="Arogyam logo" /><div><span>{copy('goodMorning')},</span><strong>{profile.name}</strong></div></div><div className="header-actions"><button className="language-toggle" onClick={changeLanguage}><Languages size={18} /> {language === 'en' ? 'हिं' : 'EN'}</button><div className="streak-pill"><Flame size={18} /> 0</div></div></header><main className="page-content">{currentPage}</main><nav className="bottom-nav">{([['home', Sun], ['medicines', AlarmClock], ['health', HeartPulse], ['ai', Sparkles], ['more', MoreHorizontal]] as const).map(([key, Icon]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={24} /><span>{copy(key === 'ai' ? 'aiHelp' : key)}</span></button>)}</nav></div>{showAdd && <AddMedicine language={language} onClose={() => setShowAdd(false)} onSave={handleSaveMedicine} />}{showProfileEdit && <ProfileEditor language={language} profile={profile} onClose={() => setShowProfileEdit(false)} onSave={saveProfile} onReset={resetProfile} />}{showAppointments && <AppointmentManager language={language} appointments={appointments} onClose={() => setShowAppointments(false)} onSave={saveAppointment} onDelete={deleteAppointment} />}{showProfilePrompt && <ProfileCompletionPrompt language={language} onComplete={() => { setShowProfilePrompt(false); setShowProfileEdit(true); }} onLater={() => { sessionStorage.setItem('arogyam-profile-prompt-dismissed', '1'); setShowProfilePrompt(false); }} />}{showEmergency && <Emergency language={language} profile={profile} onClose={() => setShowEmergency(false)} />}{showAccountModal && cloudUser && <CloudAccountModal user={cloudUser} onClose={() => setShowAccountModal(false)} onSignOut={() => { setShowAccountModal(false); setEntryConfirmed(false); }} />}{activeAlarm && <div className="alarm-overlay"><div className="alarm-card"><div className="alarm-icon-ring"><Bell size={42} className="alarm-bell-icon" /></div><span className="alarm-badge"><AlarmClock size={16} /> {formatTime(activeAlarm.time)} · {ui(language, 'Medicine Reminder')}</span><h1 className="alarm-title">{ui(language, 'Time to take your medicine!')}</h1><div className="alarm-medicine-details"><strong className="alarm-med-name">{activeAlarm.name}</strong><div className="alarm-med-meta"><span className="alarm-chip dosage">{activeAlarm.dosage}</span><span className="alarm-chip food">{ui(language, activeAlarm.food)}</span></div></div><p className="alarm-help-text">{ui(language, 'Please take this medication as prescribed by your doctor.')}</p><div className="alarm-actions"><button className="primary-button full alarm-take-btn" onClick={() => handleTakeAlarmMedicine(activeAlarm.id)}><Check size={22} /> {ui(language, 'Mark taken')}</button><div className="alarm-secondary-actions"><button className="alarm-snooze-btn" onClick={() => handleSnoozeAlarm(activeAlarm, 5)}><AlarmClock size={18} /> {ui(language, 'Snooze 5 min')}</button><button className="alarm-dismiss-btn" onClick={stopCurrentAlarm}><X size={18} /> {ui(language, 'Dismiss')}</button></div></div></div></div>}{toast && <div className="toast"><Check size={18} /> {toast}</div>}</div>;
 }
 
 function Home({ language, profile, medicines, appointments, copy, onTaken, onEmergency, onManageAppointments, waterToday, onAddWater, stepsToday, stepSource, heartRate, bloodPressure, temperature, onNavigate }: LangProps & { profile: Profile; medicines: Medicine[]; appointments: Appointment[]; copy: (key: Parameters<typeof t>[1]) => string; onTaken: (id: number) => void; onEmergency: () => void; onManageAppointments: () => void; waterToday: number; onAddWater: () => void; stepsToday: number; stepSource: 'checking' | 'phone' | 'band' | 'unavailable'; heartRate: number; bloodPressure: string; temperature: string; onNavigate: (tab: Tab) => void }) {
@@ -382,9 +561,9 @@ function AIHelp({ language, copy, profile, health }: LangProps & { copy: (key: P
       const primaryUrl = remoteUrl || (import.meta.env.DEV ? localUrl : '');
       if (!primaryUrl) throw new Error('AI_NOT_CONFIGURED');
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (import.meta.env.VITE_SUPABASE_ANON_KEY) {
-        headers['apikey'] = import.meta.env.VITE_SUPABASE_ANON_KEY;
-        headers['Authorization'] = `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`;
+      if (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) {
+        headers['apikey'] = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+        headers['Authorization'] = `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`;
       }
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 20000);
@@ -462,8 +641,8 @@ function ProfileCompletionPrompt({ language, onComplete, onLater }: LangProps & 
   return <div className="profile-prompt-backdrop"><div className="profile-prompt"><div className="profile-prompt-icon"><HeartPulse size={28} /></div><h2>{ui(language, 'Complete your health profile')}</h2><p>{ui(language, 'Add your basic details and health conditions so your goals and health tips fit you better. You can change them any time.')}</p><button className="primary-button full" onClick={onComplete}>{ui(language, 'Fill in my details')}</button><button className="text-button" onClick={onLater}>{ui(language, 'Maybe later')}</button></div></div>;
 }
 
-function More({ language, profile, largeText, setLargeText, onLanguage, onEmergency, onToast, onEditProfile, onResetProfile }: LangProps & { profile: Profile; largeText: boolean; setLargeText: React.Dispatch<React.SetStateAction<boolean>>; onLanguage: () => void; onEmergency: () => void; onToast: (text: string) => void; onEditProfile: () => void; onResetProfile: () => void }) {
-  return <div className="sub-page"><div className="page-title-row"><div><span className="eyebrow"><Menu size={16} /> {ui(language, 'Your space')}</span><h1>{t(language, 'more')}</h1></div><IconButton label={ui(language, 'Edit information')} onClick={onEditProfile}><Settings /></IconButton></div><button className="profile-card profile-card-button" onClick={onEditProfile}><div className="profile-avatar">{profile.name.slice(0, 1) || '?'}</div><div><h2>{profile.name || ui(language, 'Your information')}</h2><p>{profile.age ? `${profile.age} ${language === 'hi' ? 'साल' : 'years'} · ${ui(language, profile.food) || ui(language, 'Food preference not set')}` : ui(language, 'Tap to add your details')}</p><span><MapPin size={15} /> {ui(language, 'Stored on this phone')}</span></div><ChevronRight /></button><div className="settings-list"><button onClick={() => setLargeText(!largeText)}><div className="setting-icon"><Weight /></div><div><strong>{ui(language, 'Large text')}</strong><span>{ui(language, 'Make words easier to read')}</span></div><span className={`switch small ${largeText ? 'on' : ''}`}><i /></span></button><button onClick={onLanguage}><div className="setting-icon"><Languages /></div><div><strong>{ui(language, 'Language')}</strong><span>{ui(language, language === 'en' ? 'English' : 'हिन्दी')} · {ui(language, 'Tap to change')}</span></div><ChevronRight /></button><button onClick={() => onToast(ui(language, 'Reminder settings saved'))}><div className="setting-icon"><Bell /></div><div><strong>{ui(language, 'Reminder sounds')}</strong><span>{ui(language, 'Medicine and appointment alerts')}</span></div><ChevronRight /></button><button onClick={onResetProfile}><div className="setting-icon"><RotateCcw /></div><div><strong>{ui(language, 'Redo personal setup')}</strong><span>{ui(language, 'Restart step-by-step setup questions')}</span></div><ChevronRight /></button><button onClick={onEmergency}><div className="setting-icon danger"><ShieldAlert /></div><div><strong>{ui(language, 'Test emergency alert')}</strong><span>{ui(language, 'Check your nominee connection')}</span></div><ChevronRight /></button><button onClick={() => onToast(ui(language, 'Achievements opened'))}><div className="setting-icon lime"><Flame /></div><div><strong>{ui(language, 'Achievements')}</strong><span>{ui(language, '0 badges · 0 day streak')}</span></div><ChevronRight /></button></div><button className="emergency-contact emergency-contact-button" onClick={onEditProfile}><div className="contact-icon"><Phone /></div><div><span>{ui(language, 'Emergency nominee')}</span><strong>{profile.nominee || ui(language, 'Add a nominee')}</strong><p>{profile.relationship || ui(language, 'Relationship')} · {profile.phone || ui(language, 'Phone number')}</p></div><ChevronRight /></button><div className="numbers-card"><div><strong>{ui(language, 'Need help now?')}</strong><span>{ui(language, 'Emergency numbers')}</span></div><a href="tel:112"><Phone size={19} /> 112</a><a href="tel:108"><Phone size={19} /> 108</a></div></div>;
+function More({ language, profile, largeText, setLargeText, onLanguage, onEmergency, onToast, onEditProfile, onResetProfile, accountLabel, syncEnabled, onManageAccount }: LangProps & { profile: Profile; largeText: boolean; setLargeText: React.Dispatch<React.SetStateAction<boolean>>; onLanguage: () => void; onEmergency: () => void; onToast: (text: string) => void; onEditProfile: () => void; onResetProfile: () => void; accountLabel: string | null; syncEnabled: boolean; onManageAccount: () => void }) {
+  return <div className="sub-page"><div className="page-title-row"><div><span className="eyebrow"><Menu size={16} /> {ui(language, 'Your space')}</span><h1>{t(language, 'more')}</h1></div><IconButton label={ui(language, 'Edit information')} onClick={onEditProfile}><Settings /></IconButton></div><button className="profile-card profile-card-button" onClick={onEditProfile}><div className="profile-avatar">{profile.name.slice(0, 1) || '?'}</div><div><h2>{profile.name || ui(language, 'Your information')}</h2><p>{profile.age ? `${profile.age} ${language === 'hi' ? 'साल' : 'years'} · ${ui(language, profile.food) || ui(language, 'Food preference not set')}` : ui(language, 'Tap to add your details')}</p><span><MapPin size={15} /> {syncEnabled ? ui(language, 'Synced to your account') : ui(language, 'Stored on this phone')}</span></div><ChevronRight /></button><div className="settings-list"><button onClick={onManageAccount}><div className="setting-icon"><Cloud /></div><div><strong>{ui(language, 'Account and sync')}</strong><span>{accountLabel || ui(language, 'Local only')} · {ui(language, syncEnabled ? 'Secure sync is on' : 'Cloud sync is off')}</span></div><ChevronRight /></button><button onClick={() => setLargeText(!largeText)}><div className="setting-icon"><Weight /></div><div><strong>{ui(language, 'Large text')}</strong><span>{ui(language, 'Make words easier to read')}</span></div><span className={`switch small ${largeText ? 'on' : ''}`}><i /></span></button><button onClick={onLanguage}><div className="setting-icon"><Languages /></div><div><strong>{ui(language, 'Language')}</strong><span>{ui(language, language === 'en' ? 'English' : 'हिन्दी')} · {ui(language, 'Tap to change')}</span></div><ChevronRight /></button><button onClick={() => onToast(ui(language, 'Reminder settings saved'))}><div className="setting-icon"><Bell /></div><div><strong>{ui(language, 'Reminder sounds')}</strong><span>{ui(language, 'Medicine and appointment alerts')}</span></div><ChevronRight /></button><button onClick={onResetProfile}><div className="setting-icon"><RotateCcw /></div><div><strong>{ui(language, 'Redo personal setup')}</strong><span>{ui(language, 'Restart step-by-step setup questions')}</span></div><ChevronRight /></button><button onClick={onEmergency}><div className="setting-icon danger"><ShieldAlert /></div><div><strong>{ui(language, 'Test emergency alert')}</strong><span>{ui(language, 'Check your nominee connection')}</span></div><ChevronRight /></button><button onClick={() => onToast(ui(language, 'Achievements opened'))}><div className="setting-icon lime"><Flame /></div><div><strong>{ui(language, 'Achievements')}</strong><span>{ui(language, '0 badges · 0 day streak')}</span></div><ChevronRight /></button></div><button className="emergency-contact emergency-contact-button" onClick={onEditProfile}><div className="contact-icon"><Phone /></div><div><span>{ui(language, 'Emergency nominee')}</span><strong>{profile.nominee || ui(language, 'Add a nominee')}</strong><p>{profile.relationship || ui(language, 'Relationship')} · {profile.phone || ui(language, 'Phone number')}</p></div><ChevronRight /></button><div className="numbers-card"><div><strong>{ui(language, 'Need help now?')}</strong><span>{ui(language, 'Emergency numbers')}</span></div><a href="tel:112"><Phone size={19} /> 112</a><a href="tel:108"><Phone size={19} /> 108</a></div></div>;
 }
 
 function Emergency({ language, profile, onClose }: LangProps & { profile: Profile; onClose: () => void }) {

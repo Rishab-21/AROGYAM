@@ -1,2 +1,5 @@
 [functions.ai-assistant]
 verify_jwt = false
+
+[functions.phone-account]
+verify_jwt = false

@@ -4,7 +4,11 @@ A mobile-first health PWA for everyday care: medicine reminders, health band rea
 
 ## Getting started
 
-The app opens directly into a short first-time setup (name, age, conditions, goals, emergency nominee). No login or account is needed. All data is stored locally on the phone.
+Every launch shows an animated Arogyam logo, then the account screen. Users create an account or log in with a selected-country phone number and password. A Supabase Edge Function creates a confirmed account using a private deterministic email alias internally, while storing the phone number in account metadata; the user enters no email and receives no SMS. Signup asks for the password twice, and password fields block copy and paste actions. Deploy `phone-account` with `npx supabase functions deploy phone-account --project-ref pdbbgjpdxrgdfbngphro`.
+
+Profile, medicines, appointments, and a per-day snapshot of activity and available vitals sync to the signed-in user's Supabase account. Existing data on a device is never uploaded to a different account without a merge choice. When signing in on another device, choose the account's saved data to load it. Row Level Security limits each account to its own database rows; this stores one current-day snapshot, not a continuous sensor history.
+
+Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in the app's build environment. The publishable key is designed for client apps; never use a Supabase secret or service-role key in a `VITE_*` variable. For local development, put the two values in `.env`.
 
 ## Bluetooth health band
 

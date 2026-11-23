@@ -34,6 +34,7 @@ export const t = (language: Language, key: TranslationKey): string => translatio
 
 const uiTranslations: Record<string, string> = {
   'Your everyday health companion': 'आपका रोज़ का स्वास्थ्य साथी',
+  'Your answers are saved to your account.': 'आपकी जानकारी आपके खाते में सुरक्षित रहती है।',
   'Daily care': 'रोज़ की देखभाल', 'See all': 'सब देखें',
   'Small steps today make a healthier tomorrow.': 'आज के छोटे कदम, कल को स्वस्थ बनाते हैं।',
   'Tap if you need immediate help': 'तुरंत मदद चाहिए तो दबाएँ',
