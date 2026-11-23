@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="app_name">Arogyam</string>
+    <string name="arogyam_widget_description">Today’s step count and water tracker with a quick add button.</string>
     <string name="title_activity_main">Arogyam</string>
     <string name="package_name">com.arogyam.app</string>
     <string name="custom_url_scheme">com.arogyam.app</string>

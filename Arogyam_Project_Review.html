@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mobile Health App: An App That Provides Health Information, Medication Reminders, and Appointment Scheduling</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', Arial, sans-serif;
+    font-size: 11pt;
+    color: #1a2e1a;
+    background: #fff;
+    line-height: 1.6;
+  }
+
+  /* ── Page layout ── */
+  .page {
+    width: 210mm;
+    min-height: 297mm;
+    margin: 0 auto;
+    padding: 18mm 18mm 14mm 18mm;
+    background: #fff;
+  }
+
+  @media print {
+    body { background: #fff; }
+    .page { width: 100%; margin: 0; padding: 15mm 15mm 10mm 15mm; }
+    .no-break { page-break-inside: avoid; }
+    h2 { page-break-after: avoid; }
+    .section { page-break-inside: avoid; }
+  }
+
+  /* ── Cover / Header ── */
+  .cover {
+    background: linear-gradient(135deg, #1a5c35 0%, #2e8b57 60%, #4aab72 100%);
+    color: #fff;
+    border-radius: 16px;
+    padding: 36px 36px 30px 36px;
+    margin-bottom: 28px;
+    position: relative;
+    overflow: hidden;
+  }
+  .cover::before {
+    content: '';
+    position: absolute;
+    top: -60px; right: -60px;
+    width: 220px; height: 220px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.07);
+  }
+  .cover::after {
+    content: '';
+    position: absolute;
+    bottom: -40px; left: 40%;
+    width: 160px; height: 160px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.05);
+  }
+  .cover-eyebrow {
+    font-size: 10pt;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #a8f0c6;
+    margin-bottom: 10px;
+  }
+  .cover h1 {
+    font-size: 36pt;
+    font-weight: 900;
+    letter-spacing: -1px;
+    line-height: 1.1;
+    margin-bottom: 6px;
+  }
+  .cover-sub {
+    font-size: 13pt;
+    color: #c8f0da;
+    margin-bottom: 24px;
+    font-weight: 400;
+  }
+  .cover-meta {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    font-size: 9.5pt;
+    color: #d0f0e0;
+    border-top: 1px solid rgba(255,255,255,0.2);
+    padding-top: 18px;
+    margin-top: 4px;
+  }
+  .cover-meta span { font-weight: 700; color: #fff; }
+
+  /* ── Section ── */
+  .section {
+    margin-bottom: 24px;
+  }
+  h2 {
+    font-size: 14pt;
+    font-weight: 800;
+    color: #1a5c35;
+    border-left: 5px solid #2e8b57;
+    padding-left: 12px;
+    margin-bottom: 14px;
+    line-height: 1.2;
+  }
+  h3 {
+    font-size: 11pt;
+    font-weight: 700;
+    color: #1a3c24;
+    margin-bottom: 8px;
+    margin-top: 14px;
+  }
+  p { margin-bottom: 9px; color: #2a3e2a; }
+  ul, ol { padding-left: 20px; margin-bottom: 10px; }
+  li { margin-bottom: 4px; color: #2a3e2a; }
+  strong { color: #1a3c24; }
+
+  /* ── Cards ── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .card-grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .card {
+    background: #f0f9f4;
+    border: 1px solid #c8e8d4;
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .card-icon { font-size: 20px; margin-bottom: 6px; }
+  .card h4 { font-size: 10pt; font-weight: 800; color: #1a5c35; margin-bottom: 4px; }
+  .card p { font-size: 9.5pt; color: #3a5a3a; margin: 0; }
+
+  .card-orange { background: #fff8f0; border-color: #f0d8b8; }
+  .card-orange h4 { color: #8b4a00; }
+  .card-orange p { color: #5a3a1a; }
+
+  .card-blue { background: #f0f4ff; border-color: #c0cef0; }
+  .card-blue h4 { color: #1a3080; }
+  .card-blue p { color: #2a3a6a; }
+
+  /* ── Feature table ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10pt;
+    margin-bottom: 12px;
+  }
+  th {
+    background: #1a5c35;
+    color: #fff;
+    padding: 9px 12px;
+    text-align: left;
+    font-weight: 700;
+    font-size: 9.5pt;
+  }
+  td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #d8edd8;
+    color: #2a3e2a;
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: #f4fbf6; }
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 6px;
+    font-size: 8.5pt;
+    font-weight: 700;
+  }
+  .badge-green { background: #c8f0da; color: #1a5c35; }
+  .badge-blue  { background: #c8d8f8; color: #1a3080; }
+  .badge-orange{ background: #f8e8c8; color: #8b4a00; }
+
+  /* ── Tech stack ── */
+  .tech-pill {
+    display: inline-block;
+    background: #e8f5ee;
+    border: 1px solid #b8dcc8;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 9pt;
+    font-weight: 700;
+    color: #1a5c35;
+    margin: 3px;
+  }
+
+  /* ── Architecture box ── */
+  .arch-box {
+    background: #f8fdf9;
+    border: 1.5px solid #b8dcc8;
+    border-radius: 10px;
+    padding: 16px 20px;
+    font-size: 9.5pt;
+    color: #2a4a2a;
+    margin-bottom: 12px;
+  }
+  .arch-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .arch-label {
+    font-weight: 700;
+    color: #1a5c35;
+    min-width: 100px;
+  }
+  .arch-arrow { color: #2e8b57; font-size: 12pt; }
+
+  /* ── Quote / highlight ── */
+  .highlight {
+    background: linear-gradient(90deg, #e8f8f0, #f0fbf4);
+    border-left: 4px solid #2e8b57;
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px;
+    margin: 10px 0;
+    font-size: 10.5pt;
+    color: #1a3c24;
+    font-style: italic;
+  }
+
+  /* ── Footer ── */
+  .footer {
+    margin-top: 30px;
+    padding-top: 14px;
+    border-top: 2px solid #d0ead0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 9pt;
+    color: #5a7a5a;
+  }
+  .footer-brand { font-weight: 800; color: #1a5c35; font-size: 10pt; }
+
+  /* ── Divider ── */
+  .divider {
+    border: none;
+    border-top: 1.5px solid #d8edd8;
+    margin: 20px 0;
+  }
+
+  /* ── Challenge/Future table ── */
+  .future-item {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 10px 14px;
+    background: #f4fbf6;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    border: 1px solid #d0e8d8;
+  }
+  .future-num {
+    background: #2e8b57;
+    color: #fff;
+    font-weight: 900;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10pt;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .future-content h4 { font-size: 10pt; font-weight: 700; color: #1a3c24; margin-bottom: 2px; }
+  .future-content p { font-size: 9.5pt; color: #3a5a3a; margin: 0; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── COVER ── -->
+  <div class="cover">
+    <div class="cover-eyebrow">PROJECT REPORT · NOVEMBER 2026</div>
+    <h1 style="font-size:27pt;max-width:650px">Mobile Health App</h1>
+    <div class="cover-sub">An App That Provides Health Information, Medication Reminders, and Appointment Scheduling</div>
+    <div class="cover-meta">
+      <div>Project&nbsp;&nbsp;<span>Arogyam</span></div>
+      <div>Platform&nbsp;&nbsp;<span>Android · iOS · Web (PWA)</span></div>
+      <div>Technology&nbsp;&nbsp;<span>React · TypeScript · Capacitor</span></div>
+      <div>Student&nbsp;&nbsp;<span>________________</span></div>
+      <div>Submitted to&nbsp;&nbsp;<span>________________</span></div>
+    </div>
+  </div>
+
+  <!-- ── 1. EXECUTIVE SUMMARY ── -->
+  <div class="section no-break">
+    <h2>1. Executive Summary</h2>
+    <p><strong>Arogyam</strong> is a mobile-first personal health companion designed to help people organise everyday care. It brings medicine reminders, a simple health dashboard, Bluetooth health-band connectivity, emergency contact actions, and AI-assisted general guidance into one accessible interface.</p>
+    <p>The project is built with React, TypeScript, and Vite, with Capacitor support for Android and iOS and a Progressive Web App for browser access. The current version stores profile and medicine information on the device. A cloud database and account-based synchronisation are planned so a user can sign in and access their information after changing devices. This database is not yet implemented.</p>
+    <div class="highlight">The project focuses on practical daily support: making it easier to remember medicines, record basic health information, and reach a nominated contact when help is needed.</div>
+  </div>
+  <hr class="divider" />
+
+  <!-- ── 2. PROBLEM STATEMENT ── -->
+  <div class="section">
+    <h2>2. Problem Statement</h2>
+    <p>People managing routine medicines and health information may face practical challenges that are not solved by a reminder alone. Arogyam is designed around the following needs:</p>
+    <div class="card-grid">
+      <div class="card"><div class="card-icon">💊</div><h4>Missed or Delayed Medicines</h4><p>Busy routines, multiple medicines, and memory difficulties can lead to missed or late doses. A reminder with a clear medicine name, dosage, and time can support a more consistent routine.</p></div>
+      <div class="card card-orange"><div class="card-icon">👵</div><h4>Difficulty Using Complex Apps</h4><p>Some older adults find dense screens and multi-step tasks difficult. A clear home screen and a one-tap “Taken” action can make it simpler to record a dose after taking it.</p></div>
+      <div class="card card-blue"><div class="card-icon">🏠</div><h4>Older Adults Home Alone</h4><p>Family members may be at work while a senior family member is at home without immediate in-person support. Reminders and a quick emergency contact action provide useful support, while not replacing a caregiver or emergency service.</p></div>
+      <div class="card"><div class="card-icon">📋</div><h4>Health Information in Different Places</h4><p>Medicine schedules, personal health details, and daily readings can be difficult to keep organised when recorded separately or on paper. A single app can bring these routine details together.</p></div>
+      <div class="card card-orange"><div class="card-icon">🚨</div><h4>Delay in Reaching a Trusted Contact</h4><p>During a stressful moment, locating and dialling a family contact may take extra steps. Arogyam keeps a nominated contact and emergency call options available in the app.</p></div>
+    </div>
+  </div>
+  <hr class="divider" />
+
+  <!-- ── 3. OBJECTIVES ── -->
+  <div class="section no-break">
+    <h2>3. Project Objectives</h2>
+    <ol>
+      <li>Provide a <strong>daily medicine reminder system</strong> with native OS-level push notifications that work even when the phone is locked or the app is closed.</li>
+      <li>Track key health vitals — heart rate, blood pressure, temperature, steps, and water intake — with real hardware band integration via Bluetooth Web API.</li>
+      <li>Offer an <strong>AI health companion</strong> (Arogyam AI) for personalised, safe, non-diagnostic health guidance in both English and Hindi.</li>
+      <li>Include a one-tap <strong>Emergency SOS system</strong> that surfaces the user's emergency nominee details instantly.</li>
+      <li>Support <strong>bilingual interface</strong> (English + Hindi) with instant language toggle for accessibility across India.</li>
+      <li>Protect personal information in the current local-storage version, and plan a secure, consent-based database with account sign-in and synchronisation for future access across devices.</li>
+    </ol>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- ── 4. TECHNOLOGY STACK ── -->
+  <div class="section no-break">
+    <h2>4. Technology Stack</h2>
+
+    <div class="card-grid">
+      <div>
+        <h3>Frontend</h3>
+        <div>
+          <span class="tech-pill">React 18</span>
+          <span class="tech-pill">TypeScript 5.6</span>
+          <span class="tech-pill">Vite 5.4</span>
+          <span class="tech-pill">CSS Custom Properties</span>
+          <span class="tech-pill">Lucide React Icons</span>
+        </div>
+        <br/>
+        <h3>Native Mobile</h3>
+        <div>
+          <span class="tech-pill">Capacitor 8.5</span>
+          <span class="tech-pill">Android (Gradle / Java)</span>
+          <span class="tech-pill">iOS (Xcode / Swift)</span>
+          <span class="tech-pill">@capacitor/local-notifications</span>
+        </div>
+      </div>
+      <div>
+        <h3>APIs & Browser Features</h3>
+        <div>
+          <span class="tech-pill">Web Audio API</span>
+          <span class="tech-pill">Vibration API</span>
+          <span class="tech-pill">Web Bluetooth API</span>
+          <span class="tech-pill">Web Speech API</span>
+          <span class="tech-pill">Notification API</span>
+          <span class="tech-pill">localStorage</span>
+        </div>
+        <br/>
+        <h3>AI Integration</h3>
+        <div>
+          <span class="tech-pill">Google Gemini API</span>
+          <span class="tech-pill">Context-aware prompting</span>
+          <span class="tech-pill">Safety-first responses</span>
+        </div>
+      </div>
+    </div>
+
+    <h3>Application Architecture</h3>
+    <div class="arch-box">
+      <div class="arch-row">
+        <span class="arch-label">Source Code</span>
+        <span class="arch-arrow">→</span>
+        <span>React + TypeScript (src/)</span>
+      </div>
+      <div class="arch-row">
+        <span class="arch-label">Build Tool</span>
+        <span class="arch-arrow">→</span>
+        <span>Vite compiles to optimised static assets in dist/</span>
+      </div>
+      <div class="arch-row">
+        <span class="arch-label">Capacitor Sync</span>
+        <span class="arch-arrow">→</span>
+        <span>dist/ is copied into android/app/src/main/assets/public/ and ios/App/App/public/</span>
+      </div>
+      <div class="arch-row">
+        <span class="arch-label">Android Runtime</span>
+        <span class="arch-arrow">→</span>
+        <span>WebView renders React app · Java bridge handles native APIs</span>
+      </div>
+      <div class="arch-row">
+        <span class="arch-label">iOS Runtime</span>
+        <span class="arch-arrow">→</span>
+        <span>WKWebView renders React app · Swift bridge handles native APIs</span>
+      </div>
+      <div class="arch-row" style="margin-bottom:0">
+        <span class="arch-label">Current Data</span>
+        <span class="arch-arrow">→</span>
+        <span>Profile and medicine details use browser localStorage on the current device</span>
+      </div>
+    </div>
+    <div class="arch-box"><strong>Planned cross-device design:</strong> Add user sign-in and a secure database so the same user can retrieve their profile and care records after changing devices. The database, synchronisation, and account recovery are future work; they are not part of the current implementation.</div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- ── 5. FEATURES ── -->
+  <div class="section">
+    <h2>5. Features &amp; Modules</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width:28%">Feature</th>
+          <th style="width:44%">Description</th>
+          <th style="width:14%">Platform</th>
+          <th style="width:14%">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>🏠 Home Dashboard</strong></td>
+          <td>Personalised greeting, next medicine card with one-tap “Taken” action, goal rings, vitals strip, food and appointment placeholders, and emergency action.</td>
+          <td><span class="badge badge-green">All</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>💊 Medicine Manager</strong></td>
+          <td>Add medicines with name, dosage, time, food instructions and weekly day selection. Pause, resume, delete and mark as taken. Adherence bar chart. Daily reset at midnight.</td>
+          <td><span class="badge badge-green">All</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>🔔 Alarm System (In-App)</strong></td>
+          <td>Checks every second against scheduled medicine times. In-app reminder with medicine details and actions to mark taken, snooze, or dismiss. Sound and vibration are supported where the device permits them.</td>
+          <td><span class="badge badge-green">All</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>📲 Native Push Notifications</strong></td>
+          <td>OS-level notifications via @capacitor/local-notifications. Fire when app is closed or locked. Heads-up popup on Android. Lock screen notification on iOS. Daily repeating. Tapping notification opens alarm in-app. Notifications cancelled automatically when medicine is deleted.</td>
+          <td><span class="badge badge-blue">Android · iOS</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>❤️ Health Vitals</strong></td>
+          <td>Heart rate, blood pressure, body temperature, sleep hours, steps today, water today. All cards show real readings only — no fake demo data. Manual water glass logging (+250 ml). Band icon shows connection status.</td>
+          <td><span class="badge badge-green">All</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>📡 Bluetooth Band Integration</strong></td>
+          <td>Web Bluetooth API connects to custom Arogyam hardware band. Reads a JSON data stream from a compatible band using the configured custom Bluetooth service. A compatible device is required; browser support varies.</td>
+          <td><span class="badge badge-orange">Android</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>🤖 Arogyam AI</strong></td>
+          <td>Google Gemini-powered health companion. Personalised responses using stored user profile (age, weight, conditions, food preference). Voice input (Speech Recognition API). Quick prompts: food plan, care suggestion, health tip. Safety disclaimer on every response.</td>
+          <td><span class="badge badge-green">All</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>🚨 Emergency SOS</strong></td>
+          <td>Emergency screen provides a call action for the saved nominee and displays emergency numbers. The user initiates the call; it is not an automatic dispatch service.</td>
+          <td><span class="badge badge-green">All</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>🌐 Bilingual Interface</strong></td>
+          <td>Full English ↔ Hindi toggle on every screen. 200+ translated strings including health terms, instructions, AI responses, and alarm messages. Instant switch — no restart needed.</td>
+          <td><span class="badge badge-green">All</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>👤 Personal Profile Setup</strong></td>
+          <td>Step-by-step profile setup for personal details, health conditions, goals, and an emergency nominee. Profile information can be edited in the app and is currently stored locally on the device.</td>
+          <td><span class="badge badge-green">All</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>♿ Accessibility</strong></td>
+          <td>Large text mode toggle for easier reading. High-contrast green and cream color scheme. ARIA labels on all icon buttons. Semantic HTML structure.</td>
+          <td><span class="badge badge-green">All</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+        <tr>
+          <td><strong>📱 PWA Support</strong></td>
+          <td>Web manifest, service worker, installable from browser. Works offline (cached assets). Runs in full-screen mode on mobile browsers.</td>
+          <td><span class="badge badge-green">Web</span></td>
+          <td><span class="badge badge-green">✓ Done</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- ── 6. ALARM SYSTEM ── -->
+  <div class="section no-break">
+    <h2>6. Medicine Alarm System — Technical Deep Dive</h2>
+    <p>
+      The alarm system is the core innovation of Arogyam. It was engineered to work reliably across the Android WebView environment, which has stricter restrictions than a desktop browser.
+    </p>
+
+    <h3>Three-Layer Alarm Architecture</h3>
+    <table>
+      <thead>
+        <tr><th style="width:28%">Layer</th><th style="width:36%">Technology</th><th style="width:36%">Use Case</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Layer 1 — Native OS</strong></td>
+          <td>@capacitor/local-notifications</td>
+          <td>Fires when app is closed, locked screen, or any other app is open. Daily repeating. Heads-up popup.</td>
+        </tr>
+        <tr>
+          <td><strong>Layer 2 — In-App Timer</strong></td>
+          <td>setInterval (1-second tick)</td>
+          <td>Fires the full-screen alarm card when user is actively using the app. Prevents duplicate fires using unique fireKey per medicine per day per time.</td>
+        </tr>
+        <tr>
+          <td><strong>Layer 3 — Audio</strong></td>
+          <td>Web Audio API + HTML5 Audio WAV fallback</td>
+          <td>Pleasant 4-note C5→E5→G5→C6 chime. Repeats every 1.6 seconds. Works in Android WebView with <code>setMediaPlaybackRequiresUserGesture(false)</code> in MainActivity.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Android-Specific Fixes</h3>
+    <ul>
+      <li><strong>WebView Audio Unlock:</strong> <code>WebSettings.setMediaPlaybackRequiresUserGesture(false)</code> set in MainActivity.java — without this, Android silently blocks all timer-triggered audio.</li>
+      <li><strong>Exact Alarm Permissions:</strong> <code>SCHEDULE_EXACT_ALARM</code> and <code>USE_EXACT_ALARM</code> added to AndroidManifest.xml so notifications fire at precisely the set time.</li>
+      <li><strong>WAV Chime Generator:</strong> A PCM WAV file is generated programmatically in JavaScript (no external file needed) and played via HTML5 Audio as fallback if Web Audio API is blocked.</li>
+      <li><strong>Multi-event Unlock:</strong> AudioContext resumed on <code>pointerdown</code>, <code>touchstart</code>, <code>touchend</code>, <code>click</code>, and <code>keydown</code> events — covers all interaction scenarios including Android's touch events.</li>
+    </ul>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- ── 7. PRIVACY & DATA ── -->
+  <div class="section">
+    <h2>7. Data Privacy, Storage &amp; Security</h2>
+    <p>Privacy and cross-device access are both project requirements. The current build stores the profile and medicine list in browser localStorage on the device in use. This means the information does not automatically follow a user to a new phone. The planned database will address that limitation.</p>
+    <div class="card-grid">
+      <div class="card"><div class="card-icon">📱</div><h4>Current Local Storage</h4><p>Profile, medicine schedule, and language preference are kept in localStorage on the current device. The current app has no account-based cloud synchronisation.</p></div>
+      <div class="card card-orange"><div class="card-icon">☁️</div><h4>Planned Database</h4><p>A future database will support authenticated access and synchronisation so users can retrieve their saved information after changing devices. This feature remains to be designed and implemented.</p></div>
+      <div class="card card-blue"><div class="card-icon">🛡️</div><h4>Planned Privacy Controls</h4><p>Database work should include user consent, secure sign-in, access controls, protected data transfer and storage, and a way for users to review or delete their records.</p></div>
+      <div class="card"><div class="card-icon">🤖</div><h4>AI Data Handling</h4><p>When the AI assistant is used, the app sends the message, selected profile fields, and current readings to the configured Supabase Edge Function for an AI response. The nominee phone details are not included in that AI payload.</p></div>
+    </div>
+    <p><strong>Privacy statement:</strong> Arogyam aims to collect only information needed for its care features. Moving to cloud storage changes the privacy model and must be accompanied by clear notice, appropriate safeguards, and user control.</p>
+  </div>
+  <hr class="divider" />
+
+  <!-- ── 8. UI/UX DESIGN ── -->
+  <div class="section no-break">
+    <h2>8. UI / UX Design Philosophy</h2>
+    <p>Arogyam's design is guided by three principles:</p>
+
+    <h3>1. Trust Through Calm Design</h3>
+    <p>The color palette uses <strong>forest green (#2E8B57), lime (#C5CB3E), warm cream (#F8FDF9), and orange (#F0A020)</strong> — natural, calming tones associated with health and nature in Indian culture. Purple and violet are deliberately avoided. The typeface is clean and generous in size.</p>
+
+    <h3>2. Simplicity for All Ages</h3>
+    <p>The bottom navigation uses large icons with text labels. Every action needs at most one tap. The onboarding wizard breaks the setup into 12 small, friendly questions — never overwhelming the user. A "Skip for now" option is always available.</p>
+
+    <h3>3. No Fake Data</h3>
+    <p>Unlike many health apps that pre-fill demo vitals (like a fake heart rate of 72 BPM), Arogyam shows all health metric cards at zero until a real reading arrives. This builds trust with the user — what they see is real.</p>
+
+    <h3>Screen Breakdown</h3>
+    <div class="card-grid-3">
+      <div class="card"><h4>🏠 Home</h4><p>Dashboard with greeting, emergency button, medicine highlight, goal rings, vitals, food &amp; appointment cards.</p></div>
+      <div class="card"><h4>💊 Medicines</h4><p>Add, pause, delete, and mark medicines taken; set dosage, time and food instructions; view a basic adherence summary and test an alarm.</p></div>
+      <div class="card"><h4>❤️ Health</h4><p>Vitals grid, steps ring, water tracker, band connection setup wizard.</p></div>
+      <div class="card"><h4>🤖 AI Help</h4><p>Chat with Arogyam AI, voice input, quick prompt buttons for food, care, and health tips.</p></div>
+      <div class="card"><h4>⚙️ More</h4><p>Profile view/edit, large text toggle, language switch, emergency settings, achievements.</p></div>
+      <div class="card"><h4>🚨 Emergency</h4><p>Full-screen SOS modal with nominee details, countdown timer, and call button.</p></div>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- ── 9. CHALLENGES ── -->
+  <div class="section no-break">
+    <h2>9. Challenges &amp; Solutions</h2>
+    <table>
+      <thead>
+        <tr><th style="width:35%">Challenge</th><th style="width:65%">Solution</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Android WebView audio blocked by OS gesture lock</strong></td>
+          <td>Disabled <code>setMediaPlaybackRequiresUserGesture</code> in MainActivity.java. Added a programmatically-generated WAV chime as HTML5 Audio fallback. AudioContext resumed on all touch/click events.</td>
+        </tr>
+        <tr>
+          <td><strong>Notifications not firing when app was closed</strong></td>
+          <td>Replaced web-only Notification API (which only works when app is open) with <code>@capacitor/local-notifications</code> — the native OS alarm scheduling layer used by real alarm apps.</td>
+        </tr>
+        <tr>
+          <td><strong>Notification permission hanging on Android WebView</strong></td>
+          <td>Wrapped <code>Notification.requestPermission()</code> in a 500 ms timeout race so the UI never freezes waiting for a permission dialog that Android WebView doesn't show.</td>
+        </tr>
+        <tr>
+          <td><strong>Hindi translation coverage for 200+ dynamic strings</strong></td>
+          <td>Built a custom two-tier i18n system: structured key-value translations for navigation/titles, and a flat lookup map (<code>ui()</code>) for inline dynamic strings like medicine food instructions and alarm messages.</td>
+        </tr>
+        <tr>
+          <td><strong>Balancing local privacy and continuity across devices</strong></td>
+          <td>The current build keeps profile and medicine data in localStorage. A future authenticated database and synchronisation flow is planned to make user-approved records available on a new device.</td>
+        </tr>
+        <tr>
+          <td><strong>Duplicate alarm triggers across days</strong></td>
+          <td>Implemented a composite <code>fireKey = medicineId-YYYY-MM-DD-HH:MM</code> lookup in a React state map. Resets at midnight when date changes. Prevents the same alarm from firing twice in the same minute.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- ── 10. FUTURE SCOPE ── -->
+  <div class="section">
+    <h2>10. Future Scope &amp; Enhancements</h2>
+
+    <div class="future-item">
+      <div class="future-num">1</div>
+      <div class="future-content">
+        <h4>Secure Database &amp; Cross-Device Access</h4>
+        <p>Set up a database with user sign-in, consent, access controls, and secure synchronisation so users can access their profile and care information after changing devices. This is planned work and is not yet implemented.</p>
+      </div>
+    </div>
+    <div class="future-item">
+      <div class="future-num">2</div>
+      <div class="future-content">
+        <h4>Caregiver / Family View</h4>
+        <p>With the user's permission, allow a trusted family member to view selected medicine adherence and health information through a carefully controlled sharing feature.</p>
+      </div>
+    </div>
+    <div class="future-item">
+      <div class="future-num">3</div>
+      <div class="future-content">
+        <h4>Doctor Appointment Scheduling</h4>
+        <p>Add appointment details, reminders, notes, and optional directions so users can keep upcoming visits organised.</p>
+      </div>
+    </div>
+    <div class="future-item">
+      <div class="future-num">2</div>
+      <div class="future-content">
+        <h4>Medicine Prescription Scanner</h4>
+        <p>Use the device camera and OCR to scan a doctor's prescription and automatically populate the medicine list — removing manual data entry.</p>
+      </div>
+    </div>
+
+    <div class="future-item">
+      <div class="future-num">5</div>
+      <div class="future-content">
+        <h4>Expanded Language Support</h4>
+        <p>Add Tamil, Bengali, Marathi, Telugu, Kannada, and Gujarati — covering India's top regional languages for maximum reach.</p>
+      </div>
+    </div>
+    <div class="future-item">
+      <div class="future-num">6</div>
+      <div class="future-content">
+        <h4>Health Report Generation</h4>
+        <p>Generate a weekly or monthly PDF health report (vitals, medicine adherence, water intake, steps) that users can share with their doctor.</p>
+      </div>
+    </div>
+    <div class="future-item">
+      <div class="future-num">7</div>
+      <div class="future-content">
+        <h4>Teleconsultation Integration</h4>
+        <p>Integrate with telemedicine APIs (like Practo, Eka Care) to allow users to book a video consultation with a doctor directly from the app.</p>
+      </div>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- ── 11. CONCLUSION ── -->
+  <div class="section no-break">
+    <h2>11. Conclusion</h2>
+    <p>Arogyam brings several everyday health-support features into a single mobile-first app: medicine scheduling and reminders, a one-tap medicine completion action on the in-app home screen, health information cards, optional Bluetooth band connectivity, an emergency nominee call action, and general AI-assisted guidance.</p>
+    <p>The design recognises that older adults may be at home without a family member present during the day. Clear reminders and fast access to a saved contact can help, while the app remains a support tool and cannot replace supervision, medical advice, or emergency services.</p>
+    <p>The current project stores profile and medicine data locally. Its next major development step is a secure, consent-based database and account system that allows users to access their information on a replacement or additional device. This planned feature is not yet available in the submitted build.</p>
+    <div class="highlight">Arogyam aims to make routine health management clearer, more accessible, and easier to keep organised.</div>
+  </div>
+
+  <!-- ── FOOTER ── -->
+  <div class="footer">
+    <div class="footer-brand">AROGYAM · Mobile Health App</div>
+    <div>Project Report · November 2026</div>
+  </div>
+
+</div>
+</body>
+</html>

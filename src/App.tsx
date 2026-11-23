@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
 import {
   Activity, AlarmClock, Apple, ArrowRight, Bell, Bluetooth, CalendarDays, Check, ChevronRight, CircleHelp,
   Droplets, Flame, HeartPulse, Hospital, Languages, Leaf, MapPin, Menu, Mic, MoreHorizontal, Pause, Phone,
@@ -6,6 +7,7 @@ import {
   Watch, Weight, X, Zap, Save, RotateCcw
 } from 'lucide-react';
 import { connectBand } from '@/lib/bluetooth';
+import { isNativeAndroid, listenForPhoneSteps, listenForPhoneWater, startPhoneStepTracking, updatePhoneWidget } from '@/lib/phone-health';
 import { Language, t, ui } from '@/i18n';
 import {
   startAlarmSound, stopAlarmSound,
@@ -15,6 +17,7 @@ import {
   createMedicineNotificationChannel,
   requestNativeNotificationPermission,
   scheduleMedicineNotification,
+  scheduleTestNotification,
   cancelMedicineNotification,
   cancelAllMedicineNotifications,
   listenForNotificationTap,
@@ -23,10 +26,49 @@ import {
 type Tab = 'home' | 'medicines' | 'health' | 'ai' | 'more';
 type Profile = { name: string; age: string; gender: string; height: string; weight: string; conditions: string[]; food: string; steps: number; water: number; nominee: string; relationship: string; phone: string };
 type Medicine = { id: number; name: string; dosage: string; time: string; food: string; paused: boolean; taken: boolean };
+type Appointment = { id: number; title: string; doctor: string; location: string; date: string; time: string };
 type LangProps = { language: Language };
+
+function localDayKey() { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`; }
+function savedWaterToday() {
+  try { const saved = JSON.parse(localStorage.getItem('arogyam-water') || 'null') as { date?: string; amount?: number } | null; return saved?.date === localDayKey() ? Math.max(0, Number(saved.amount) || 0) : 0; }
+  catch { return 0; }
+}
 
 const defaultProfile: Profile = { name: '', age: '', gender: '', height: '', weight: '', conditions: [], food: '', steps: 0, water: 0, nominee: '', relationship: '', phone: '' };
 const initialMedicines: Medicine[] = [];
+const commonConditions = [
+  'Diabetes', 'High blood pressure', 'Low blood pressure', 'Heart disease', 'High cholesterol', 'Asthma', 'COPD', 'Thyroid disease', 'Hypothyroidism', 'Hyperthyroidism', 'Arthritis', 'Osteoarthritis', 'Rheumatoid arthritis', 'Osteoporosis', 'Migraine', 'Epilepsy', 'Stroke', 'Kidney disease', 'Chronic kidney disease', 'Liver disease', 'Fatty liver', 'Cancer', 'Anemia', 'Obesity', 'Depression', 'Anxiety', 'Bipolar disorder', 'Sleep apnea', 'GERD / acid reflux', 'Ulcer', 'IBS', 'Crohn’s disease', 'Celiac disease', 'PCOS', 'Endometriosis', 'Pregnancy', 'Allergies', 'Eczema', 'Psoriasis', 'Glaucoma', 'Hearing loss', 'Back pain', 'Chronic pain', 'Dementia', 'Parkinson’s disease', 'Multiple sclerosis', 'HIV', 'Tuberculosis', 'Hepatitis', 'Long COVID', 'Other', 'None',
+];
+
+function ConditionPicker({ language, value, onChange }: { language: Language; value: string[]; onChange: (conditions: string[]) => void }) {
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const matches = commonConditions.filter((condition) =>
+    !value.includes(condition) && `${condition} ${ui(language, condition)}`.toLocaleLowerCase().includes(normalizedQuery),
+  ).slice(0, 12);
+  const toggle = (condition: string) => {
+    if (condition === 'None') { onChange(value.includes('None') ? [] : ['None']); return; }
+    const withoutNone = value.filter((item) => item !== 'None');
+    onChange(withoutNone.includes(condition) ? withoutNone.filter((item) => item !== condition) : [...withoutNone, condition]);
+  };
+  const addCustom = () => {
+    const condition = query.trim();
+    if (!condition) return;
+    onChange([...value.filter((item) => item !== 'None' && item.toLocaleLowerCase() !== condition.toLocaleLowerCase()), condition]);
+    setQuery('');
+  };
+  return <div className="condition-picker">
+    <input type="search" value={query} placeholder={ui(language, 'Search or add a condition')} onChange={(event) => setQuery(event.target.value)} aria-label={ui(language, 'Search or add a condition')} />
+    {value.length > 0 && <div className="selected-conditions"><strong>{ui(language, 'Selected')}</strong><div className="choice-grid">{value.map((condition) => <button type="button" key={condition} className="choice selected" onClick={() => toggle(condition)}><X size={15} />{ui(language, condition)}</button>)}</div></div>}
+    <div className="choice-grid">{matches.map((condition) => <button type="button" key={condition} className="choice" onClick={() => toggle(condition)}>{ui(language, condition)}</button>)}</div>
+    {normalizedQuery && !commonConditions.some((condition) => condition.toLocaleLowerCase() === normalizedQuery) && <button type="button" className="outline-button" onClick={addCustom}>{ui(language, 'Add custom condition')}: “{query.trim()}”</button>}
+  </div>;
+}
+
+function profileNeedsDetails(profile: Profile): boolean {
+  return !profile.name.trim() || !profile.age || !profile.gender || !profile.height || !profile.weight || profile.conditions.length === 0 || !profile.food;
+}
 
 function speak(text: string): void { if ('speechSynthesis' in window) { window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } }
 function formatTime(time: string): string { const [hourString, minute] = time.split(':'); const hour = Number(hourString); return `${hour % 12 || 12}:${minute} ${hour >= 12 ? 'PM' : 'AM'}`; }
@@ -34,26 +76,41 @@ function formatTime(time: string): string { const [hourString, minute] = time.sp
 const IconButton = ({ label, children, onClick }: { label: string; children: React.ReactNode; onClick?: () => void }) => <button className="icon-button" aria-label={label} onClick={onClick}>{children}</button>;
 const ProgressRing = ({ value, color, icon: Icon, label }: { value: number; color: string; icon: typeof Droplets; label: string }) => <div className="ring-card"><div className="ring" style={{ '--progress': `${Math.min(value, 100)}%`, '--ring-color': color } as React.CSSProperties}><div className="ring-inner"><Icon size={20} /></div></div><strong>{Math.round(value)}%</strong><span>{label}</span></div>;
 
+function UnitSelect<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: { value: T; label: string }[]; onChange: (value: T) => void }) {
+  return <label className="unit-select"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value as T)}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
+}
+
 function Setup({ language, onComplete }: { language: Language; onComplete: (profile: Profile) => void }) {
   const [step, setStep] = useState(0); const [profile, setProfile] = useState<Profile>(defaultProfile);
+  const [heightUnit, setHeightUnit] = useState<'cm' | 'ft'>('cm');
+  const [waterUnit, setWaterUnit] = useState<'ml' | 'L'>('L');
   const fields = [
     { key: 'name', title: t(language, 'name'), value: profile.name, placeholder: ui(language, 'Your name'), type: 'text' },
-    { key: 'age', title: t(language, 'age'), value: profile.age, placeholder: ui(language, 'Age in years'), type: 'number' },
+    { key: 'age', title: t(language, 'age'), value: profile.age, placeholder: ui(language, 'Age in years'), type: 'number', unit: ui(language, 'years') },
     { key: 'gender', title: t(language, 'gender'), value: profile.gender, placeholder: ui(language, 'Choose one'), type: 'choice', options: ['Female', 'Male', 'Other'] },
-    { key: 'height', title: t(language, 'height'), value: profile.height, placeholder: ui(language, 'Height in cm'), type: 'number' },
-    { key: 'weight', title: t(language, 'weight'), value: profile.weight, placeholder: ui(language, 'Weight in kg'), type: 'number' },
-    { key: 'conditions', title: t(language, 'conditions'), value: profile.conditions[0], placeholder: ui(language, 'Choose all that apply'), type: 'chips', options: ['Diabetes', 'BP', 'Heart', 'Thyroid', 'Arthritis', 'None'] },
+    { key: 'height', title: t(language, 'height'), value: profile.height, placeholder: ui(language, 'e.g. 170'), type: 'number' },
+    { key: 'weight', title: t(language, 'weight'), value: profile.weight, placeholder: ui(language, 'Weight in kg'), type: 'number', unit: ui(language, 'kg') },
+    { key: 'conditions', title: t(language, 'conditions'), value: profile.conditions, placeholder: ui(language, 'Choose all that apply'), type: 'conditions' },
     { key: 'food', title: t(language, 'food'), value: profile.food, placeholder: ui(language, 'Choose one'), type: 'choice', options: ['Vegetarian', 'Non-vegetarian', 'Vegan'] },
-    { key: 'steps', title: t(language, 'stepsGoal'), value: String(profile.steps), placeholder: ui(language, 'For example 6000'), type: 'number' },
-    { key: 'water', title: t(language, 'waterGoal'), value: String(profile.water), placeholder: ui(language, 'Millilitres, for example 2000'), type: 'number' },
+    { key: 'steps', title: t(language, 'stepsGoal'), value: String(profile.steps || 10000), placeholder: ui(language, 'Recommended minimum 10000'), type: 'number', unit: ui(language, 'steps') },
+    { key: 'water', title: t(language, 'waterGoal'), value: profile.water ? String(waterUnit === 'L' ? profile.water / 1000 : profile.water) : '', placeholder: ui(language, waterUnit === 'L' ? 'e.g. 2 or 2.5' : 'e.g. 2000'), type: 'number' },
     { key: 'nominee', title: t(language, 'nominee'), value: profile.nominee, placeholder: ui(language, 'Name of someone we can call'), type: 'text' },
     { key: 'relationship', title: t(language, 'relationship'), value: profile.relationship, placeholder: ui(language, 'For example daughter'), type: 'text' },
     { key: 'phone', title: t(language, 'phone'), value: profile.phone, placeholder: ui(language, 'Phone number'), type: 'tel' },
   ] as const;
   const field = fields[step];
-  const setValue = (value: string) => setProfile((current) => ({ ...current, [field.key]: field.key === 'conditions' ? [value] : field.key === 'steps' || field.key === 'water' ? Number(value) : value } as Profile));
-  const finish = () => { localStorage.setItem('arogyam-profile', JSON.stringify(profile)); onComplete(profile); };
-  return <div className="setup-page"><div className="setup-top"><img src="/IMG_1169.jpg" alt="Arogyam" /><div className="step-count">{step + 1} / {fields.length}</div></div><div className="setup-progress"><span style={{ width: `${((step + 1) / fields.length) * 100}%` }} /></div><main className="setup-content"><span className="eyebrow"><Leaf size={16} /> AROGYAM</span><h1>{t(language, 'setupTitle')}</h1><p className="muted">{t(language, 'setupSub')}</p><section className="question-card"><h2>{field.title}</h2>{field.type === 'chips' || field.type === 'choice' ? <div className="choice-grid">{field.options?.map((option) => <button key={option} className={`choice ${field.value === option ? 'selected' : ''}`} onClick={() => setValue(option)}>{field.value === option && <Check size={18} />}{ui(language, option)}</button>)}</div> : <input autoFocus value={field.value} placeholder={field.placeholder} type={field.type} onChange={(event) => setValue(event.target.value)} />}<p className="helper"><ShieldAlert size={16} /> {ui(language, 'Your answers stay on this phone.')}</p></section><button className="primary-button full" onClick={() => step < fields.length - 1 ? setStep(step + 1) : finish()}>{step < fields.length - 1 ? t(language, 'continue') : t(language, 'save')}<ArrowRight size={20} /></button><button className="text-button" onClick={finish}>{t(language, 'skip')}</button></main></div>;
+  const setValue = (value: string) => setProfile((current) => ({ ...current, [field.key]: field.key === 'steps' ? Number(value) : field.key === 'water' ? Math.round(Number(value || 0) * (waterUnit === 'L' ? 1000 : 1)) : value } as Profile));
+  const heightInches = Math.round((Number(profile.height) || 0) / 2.54);
+  const heightFeet = Math.floor(heightInches / 12);
+  const heightRemainderInches = heightInches % 12;
+  const setHeightPart = (part: 'feet' | 'inches', value: string) => {
+    const feet = part === 'feet' ? Number(value || 0) : heightFeet;
+    const inches = part === 'inches' ? Number(value || 0) : heightRemainderInches;
+    const total = feet * 12 + inches;
+    setProfile((current) => ({ ...current, height: value === '' && (part === 'feet' ? !heightRemainderInches : !heightFeet) ? '' : String(Math.round(total * 2.54)) }));
+  };
+  const finish = () => { const completedProfile = { ...profile, steps: profile.steps || 10000 }; localStorage.setItem('arogyam-profile', JSON.stringify(completedProfile)); onComplete(completedProfile); };
+  return <div className="setup-page"><div className="setup-top"><img src="/IMG_1169.jpg" alt="Arogyam" /><div className="step-count">{step + 1} / {fields.length}</div></div><div className="setup-progress"><span style={{ width: `${((step + 1) / fields.length) * 100}%` }} /></div><main className="setup-content"><span className="eyebrow"><Leaf size={16} /> AROGYAM</span><h1>{t(language, 'setupTitle')}</h1><p className="muted">{t(language, 'setupSub')}</p><section className="question-card"><h2>{field.title}</h2>{field.key === 'conditions' ? <ConditionPicker language={language} value={profile.conditions} onChange={(conditions) => setProfile((current) => ({ ...current, conditions }))} /> : field.type === 'choice' ? <div className="choice-grid">{field.options?.map((option) => <button key={option} className={`choice ${field.value === option ? 'selected' : ''}`} onClick={() => setValue(option)}>{field.value === option && <Check size={18} />}{ui(language, option)}</button>)}</div> : field.key === 'height' ? <div className="unit-entry"><UnitSelect label={ui(language, 'Height unit')} value={heightUnit} options={[{ value: 'cm', label: ui(language, 'Centimeters (cm)') }, { value: 'ft', label: ui(language, 'Feet & inches') }]} onChange={setHeightUnit} />{heightUnit === 'cm' ? <div className="input-unit-wrap"><input autoFocus value={profile.height} placeholder={ui(language, 'e.g. 170')} type="number" min="1" step="1" onChange={(event) => setProfile((current) => ({ ...current, height: event.target.value }))} /><span className="input-unit-badge">cm</span></div> : <div className="measurement-pair"><label><span>{ui(language, 'Feet')}</span><input autoFocus type="number" min="0" max="8" step="1" value={profile.height ? String(heightFeet) : ''} placeholder="5" onChange={(event) => setHeightPart('feet', event.target.value)} /></label><label><span>{ui(language, 'Inches')}</span><input type="number" min="0" max="11" step="1" value={profile.height ? String(heightRemainderInches) : ''} placeholder="6" onChange={(event) => setHeightPart('inches', event.target.value)} /></label></div>}<p className="unit-hint">{ui(language, 'Height conversion hint')}</p></div> : field.key === 'water' ? <div className="unit-entry"><UnitSelect label={ui(language, 'Water unit')} value={waterUnit} options={[{ value: 'ml', label: ui(language, 'Millilitres (ml)') }, { value: 'L', label: ui(language, 'Litres (L)') }]} onChange={setWaterUnit} /><div className="input-unit-wrap"><input autoFocus value={field.value} placeholder={field.placeholder} type="number" min="0" step={waterUnit === 'L' ? '0.1' : '50'} onChange={(event) => setValue(event.target.value)} /><span className="input-unit-badge">{waterUnit}</span></div><p className="unit-hint">{ui(language, 'Water conversion hint')}</p></div> : ('unit' in field && field.unit ? <div className="input-unit-wrap"><input autoFocus value={field.value} placeholder={field.placeholder} type={field.type} onChange={(event) => setValue(event.target.value)} /><span className="input-unit-badge">{field.unit}</span></div> : <input autoFocus value={field.value} placeholder={field.placeholder} type={field.type} onChange={(event) => setValue(event.target.value)} />)}<p className="helper"><ShieldAlert size={16} /> {ui(language, 'Your answers stay on this phone.')}</p></section><button className="primary-button full" onClick={() => step < fields.length - 1 ? setStep(step + 1) : finish()}>{step < fields.length - 1 ? t(language, 'continue') : t(language, 'save')}<ArrowRight size={20} /></button><button className="text-button" onClick={finish}>{t(language, 'skip')}</button></main></div>;
 }
 
 function App() {
@@ -66,12 +123,16 @@ function App() {
     const saved = localStorage.getItem('arogyam-profile');
     if (!saved) return null;
     const parsed = JSON.parse(saved) as Profile;
-    return parsed.name === 'Aarav' && parsed.nominee === 'Priya Sharma' ? null : parsed;
+    return parsed.name === 'Aarav' && parsed.nominee === 'Priya Sharma' ? null : { ...defaultProfile, ...parsed, conditions: Array.isArray(parsed.conditions) ? parsed.conditions : [], steps: Number(parsed.steps) || 10000 };
   });
-  const [tab, setTab] = useState<Tab>('home'); const [largeText, setLargeText] = useState(false); const [medicines, setMedicines] = useState<Medicine[]>(() => { const saved = localStorage.getItem('arogyam-medicines'); if (!saved) return initialMedicines; const parsed = JSON.parse(saved) as Medicine[]; const wasDemoData = parsed.length === 2 && parsed.some((m) => m.name === 'Metformin') && parsed.some((m) => m.name === 'Vitamin D3'); return wasDemoData ? initialMedicines : parsed; });
-  const [showAdd, setShowAdd] = useState(false); const [showEmergency, setShowEmergency] = useState(false); const [showProfileEdit, setShowProfileEdit] = useState(false);
+  const [tab, setTab] = useState<Tab>('home'); const [largeText, setLargeText] = useState(() => localStorage.getItem('arogyam-large-text') === '1'); const [medicines, setMedicines] = useState<Medicine[]>(() => { const saved = localStorage.getItem('arogyam-medicines'); if (!saved) return initialMedicines; const parsed = JSON.parse(saved) as Medicine[]; const wasDemoData = parsed.length === 2 && parsed.some((m) => m.name === 'Metformin') && parsed.some((m) => m.name === 'Vitamin D3'); return wasDemoData ? initialMedicines : parsed; });
+  const [appointments, setAppointments] = useState<Appointment[]>(() => { try { return JSON.parse(localStorage.getItem('arogyam-appointments') || '[]') as Appointment[]; } catch { return []; } });
+  const [showAdd, setShowAdd] = useState(false); const [showEmergency, setShowEmergency] = useState(false); const [showProfileEdit, setShowProfileEdit] = useState(false); const [showProfilePrompt, setShowProfilePrompt] = useState(false); const [showAppointments, setShowAppointments] = useState(false);
   const [bandConnected, setBandConnected] = useState(false); const [bandSetup, setBandSetup] = useState(false);
-  const [waterToday, setWaterToday] = useState(0); const [stepsToday, setStepsToday] = useState(0);
+  const bandConnectedRef = useRef(false);
+  const [waterToday, setWaterToday] = useState(savedWaterToday); const [stepsToday, setStepsToday] = useState(0);
+  const [stepSource, setStepSource] = useState<'checking' | 'phone' | 'band' | 'unavailable'>('checking');
+  const [phoneReady, setPhoneReady] = useState(false);
   const [heartRate, setHeartRate] = useState(0); const [bloodPressure, setBloodPressure] = useState('0/0'); const [temperature, setTemperature] = useState('0');
   const [toast, setToast] = useState('');
   const [activeAlarm, setActiveAlarm] = useState<Medicine | null>(null);
@@ -81,7 +142,6 @@ function App() {
   useEffect(() => {
     // Create Android notification channel + request permissions
     createMedicineNotificationChannel();
-    requestNativeNotificationPermission();
 
     // Listen: if user taps a notification while app is closed, open alarm UI
     let cleanup = () => {};
@@ -99,8 +159,46 @@ function App() {
   }, []);
 
   useEffect(() => { localStorage.setItem('arogyam-medicines', JSON.stringify(medicines)); }, [medicines]);
+  useEffect(() => { localStorage.setItem('arogyam-appointments', JSON.stringify(appointments)); }, [appointments]);
+  useEffect(() => { localStorage.setItem('arogyam-large-text', largeText ? '1' : '0'); }, [largeText]);
+  useEffect(() => {
+    if (profile && profileNeedsDetails(profile) && sessionStorage.getItem('arogyam-profile-prompt-dismissed') !== '1') setShowProfilePrompt(true);
+    else setShowProfilePrompt(false);
+  }, [profile]);
   useEffect(() => { localStorage.setItem('arogyam-language', language); }, [language]);
   useEffect(() => { if (toast) { const timer = window.setTimeout(() => setToast(''), 2600); return () => window.clearTimeout(timer); } }, [toast]);
+
+  useEffect(() => {
+    if (!profile) return;
+    let active = true;
+    let removeListener = () => {};
+    let removeWaterListener = () => {};
+    listenForPhoneSteps((reading) => {
+      if (!active || bandConnectedRef.current) return;
+      setStepsToday(reading.steps);
+      setStepSource(reading.available ? 'phone' : 'unavailable');
+    }).then((handle) => { removeListener = () => { void handle.remove(); }; });
+    listenForPhoneWater((reading) => {
+      if (!active || typeof reading.water !== 'number') return;
+      setWaterToday(reading.water);
+      localStorage.setItem('arogyam-water', JSON.stringify({ date: localDayKey(), amount: reading.water }));
+    }).then((handle) => { removeWaterListener = () => { void handle.remove(); }; });
+    startPhoneStepTracking().then((reading) => {
+      if (!active) return;
+      if (!bandConnectedRef.current) {
+        setStepsToday(reading.steps);
+        setStepSource(reading.available ? 'phone' : 'unavailable');
+      }
+      if (typeof reading.water === 'number') setWaterToday(reading.water);
+      setPhoneReady(true);
+    }).catch(() => { if (active) { setStepSource('unavailable'); setPhoneReady(true); } });
+    return () => { active = false; removeListener(); removeWaterListener(); };
+  }, [profile]);
+
+  useEffect(() => {
+    if (!profile || !phoneReady) return;
+    void updatePhoneWidget({ steps: stepsToday, water: waterToday, stepGoal: profile.steps, waterGoal: profile.water });
+  }, [profile, stepsToday, waterToday, phoneReady]);
 
   // Reset taken status when a new calendar day arrives
   useEffect(() => {
@@ -120,16 +218,6 @@ function App() {
     triggerSystemNotification(
       `${med.name} - ${ui(language, 'Medicine Reminder')}`,
       `${med.dosage} · ${ui(language, med.food)}`
-    );
-    // Also fire a native OS notification so it shows even if app is in background
-    const [h = '0', m = '0'] = med.time.split(':');
-    scheduleMedicineNotification(
-      med.id,
-      med.name,
-      med.dosage,
-      ui(language, med.food),
-      Number(h),
-      Number(m),
     );
   }, [language]);
 
@@ -152,8 +240,7 @@ function App() {
     }, minutes * 60 * 1000);
   };
 
-  const handleTestAlarm = () => {
-    void requestNotificationPermission().catch(() => {});
+  const handleTestAlarm = async () => {
     const now = new Date();
     const currentH = String(now.getHours()).padStart(2, '0');
     const currentM = String(now.getMinutes()).padStart(2, '0');
@@ -167,6 +254,24 @@ function App() {
       taken: false,
     };
     triggerAlarm(sampleMed);
+    if (Capacitor.isNativePlatform()) {
+      const allowed = await requestNativeNotificationPermission();
+      if (!allowed) {
+        setToast(ui(language, 'Alarm is ringing in the app. Enable Arogyam notifications in system settings for scheduled reminders.'));
+        return;
+      }
+      await createMedicineNotificationChannel();
+      const existingReminderResults: boolean[] = [];
+      for (const medicine of medicines.filter((savedMedicine) => !savedMedicine.paused)) {
+        const [hour = '0', minute = '0'] = medicine.time.split(':');
+        existingReminderResults.push(await scheduleMedicineNotification(medicine.id, medicine.name, medicine.dosage, ui(language, medicine.food), Number(hour), Number(minute)));
+      }
+      const testScheduled = await scheduleTestNotification();
+      const allScheduled = testScheduled && existingReminderResults.every(Boolean);
+      setToast(ui(language, allScheduled ? 'Test alarm started' : 'Allow Arogyam notifications and Alarms & reminders in Android settings, then test again.'));
+      return;
+    }
+    await requestNotificationPermission();
     setToast(ui(language, 'Test alarm started'));
   };
 
@@ -205,32 +310,44 @@ function App() {
     setMedicines((current) => current.filter((medicine) => medicine.id !== id));
   };
   const changeLanguage = () => setLanguage(language === 'en' ? 'hi' : 'en');
-  const connectHardware = async () => { const disconnect = await connectBand((reading) => { setHeartRate(reading.hr); setBloodPressure(`${reading.sys}/${reading.dia}`); setTemperature(String(reading.temp)); setStepsToday(reading.steps); setWaterToday(reading.water); }); if (disconnect) { setBandConnected(true); setBandSetup(false); setToast(ui(language, 'Band connected')); } else { setToast(ui(language, 'Please use Chrome on Android')); } };
-  const saveProfile = (updatedProfile: Profile) => { localStorage.setItem('arogyam-profile', JSON.stringify(updatedProfile)); setProfile(updatedProfile); setShowProfileEdit(false); setToast(ui(language, 'Your information was saved')); };
+  const connectHardware = async () => { const disconnect = await connectBand((reading) => { setHeartRate(reading.hr); setBloodPressure(`${reading.sys}/${reading.dia}`); setTemperature(String(reading.temp)); setStepsToday(reading.steps); setWaterToday(reading.water); setStepSource('band'); }); if (disconnect) { bandConnectedRef.current = true; setBandConnected(true); setStepSource('band'); setBandSetup(false); setToast(ui(language, 'Band connected')); } else { setToast(ui(language, 'Please use Chrome on Android')); } };
+  const addWater = () => setWaterToday((value) => { const next = value + 250; localStorage.setItem('arogyam-water', JSON.stringify({ date: localDayKey(), amount: next })); return next; });
+  const saveProfile = (updatedProfile: Profile) => { const normalized = { ...updatedProfile, steps: Number(updatedProfile.steps) || 10000 }; localStorage.setItem('arogyam-profile', JSON.stringify(normalized)); setProfile(normalized); setShowProfileEdit(false); setToast(ui(language, 'Your information was saved')); };
+  const saveAppointment = (appointment: Appointment) => { setAppointments((current) => [...current.filter((item) => item.id !== appointment.id), appointment].sort((a, b) => new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime())); setShowAppointments(false); setToast(ui(language, 'Appointment saved')); };
   const resetProfile = () => { cancelAllMedicineNotifications(); localStorage.removeItem('arogyam-profile'); setProfile(null); setShowProfileEdit(false); };
 
-  const handleSaveMedicine = (medicine: Omit<Medicine, 'id' | 'taken' | 'paused'>) => {
+  const handleSaveMedicine = async (medicine: Omit<Medicine, 'id' | 'taken' | 'paused'>) => {
     const id = Date.now();
     const [h = '0', m = '0'] = medicine.time.split(':');
-    // Schedule native OS notification — fires daily at this time even when app is closed
-    scheduleMedicineNotification(id, medicine.name, medicine.dosage, ui(language, medicine.food), Number(h), Number(m));
+    let remindersAllowed = true;
+    if (Capacitor.isNativePlatform()) {
+      remindersAllowed = await requestNativeNotificationPermission();
+      if (remindersAllowed) {
+        await createMedicineNotificationChannel();
+        remindersAllowed = await scheduleMedicineNotification(id, medicine.name, medicine.dosage, ui(language, medicine.food), Number(h), Number(m));
+      }
+    } else {
+      await requestNotificationPermission();
+    }
     setMedicines((current) => [...current, { ...medicine, id, taken: false, paused: false }]);
     setShowAdd(false);
-    setToast(ui(language, 'Medicine added'));
+    setToast(ui(language, remindersAllowed ? 'Medicine added' : 'Medicine added, but reminders need notification and alarm access in Android settings.'));
   };
 
-  const currentPage = tab === 'home' ? <Home language={language} profile={profile} medicines={medicines} copy={copy} onTaken={markTaken} onEmergency={() => setShowEmergency(true)} waterToday={waterToday} setWaterToday={setWaterToday} stepsToday={stepsToday} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} onNavigate={setTab} /> : tab === 'medicines' ? <Medicines language={language} medicines={medicines} copy={copy} onTaken={markTaken} onDelete={deleteMedicine} onAdd={() => setShowAdd(true)} onToast={setToast} onTestAlarm={handleTestAlarm} /> : tab === 'health' ? (bandSetup ? <BandSetup language={language} connected={bandConnected} onBack={() => setBandSetup(false)} onConnect={connectHardware} /> : <Health language={language} connected={bandConnected} onOpenSetup={() => setBandSetup(true)} onToast={setToast} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} stepsToday={stepsToday} waterToday={waterToday} setWaterToday={setWaterToday} profile={profile} />) : tab === 'ai' ? <AIHelp language={language} copy={copy} profile={profile} health={{ heartRate, bloodPressure, temperature, stepsToday, waterToday }} /> : <More language={language} profile={profile} largeText={largeText} setLargeText={setLargeText} onLanguage={changeLanguage} onEmergency={() => setShowEmergency(true)} onToast={setToast} onEditProfile={() => setShowProfileEdit(true)} onResetProfile={resetProfile} />;
-  return <div className={`app-frame ${largeText ? 'large-text' : ''}`}><div className="desktop-header"><Leaf size={22} /> AROGYAM <span>{ui(language, 'Your everyday health companion')}</span></div><div className="phone-shell"><header className="app-header"><div className="brand"><img src="/IMG_1169.jpg" alt="Arogyam logo" /><div><span>{copy('goodMorning')},</span><strong>{profile.name}</strong></div></div><div className="header-actions"><button className="language-toggle" onClick={changeLanguage}><Languages size={18} /> {language === 'en' ? 'हिं' : 'EN'}</button><div className="streak-pill"><Flame size={18} /> 0</div></div></header><main className="page-content">{currentPage}</main><nav className="bottom-nav">{([['home', Sun], ['medicines', AlarmClock], ['health', HeartPulse], ['ai', Sparkles], ['more', MoreHorizontal]] as const).map(([key, Icon]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={24} /><span>{copy(key === 'ai' ? 'aiHelp' : key)}</span></button>)}</nav></div>{showAdd && <AddMedicine language={language} onClose={() => setShowAdd(false)} onSave={handleSaveMedicine} />}{showProfileEdit && <ProfileEditor language={language} profile={profile} onClose={() => setShowProfileEdit(false)} onSave={saveProfile} onReset={resetProfile} />}{showEmergency && <Emergency language={language} profile={profile} onClose={() => setShowEmergency(false)} />}{activeAlarm && <div className="alarm-overlay"><div className="alarm-card"><div className="alarm-icon-ring"><Bell size={42} className="alarm-bell-icon" /></div><span className="alarm-badge"><AlarmClock size={16} /> {formatTime(activeAlarm.time)} · {ui(language, 'Medicine Reminder')}</span><h1 className="alarm-title">{ui(language, 'Time to take your medicine!')}</h1><div className="alarm-medicine-details"><strong className="alarm-med-name">{activeAlarm.name}</strong><div className="alarm-med-meta"><span className="alarm-chip dosage">{activeAlarm.dosage}</span><span className="alarm-chip food">{ui(language, activeAlarm.food)}</span></div></div><p className="alarm-help-text">{ui(language, 'Please take this medication as prescribed by your doctor.')}</p><div className="alarm-actions"><button className="primary-button full alarm-take-btn" onClick={() => handleTakeAlarmMedicine(activeAlarm.id)}><Check size={22} /> {ui(language, 'Mark taken')}</button><div className="alarm-secondary-actions"><button className="alarm-snooze-btn" onClick={() => handleSnoozeAlarm(activeAlarm, 5)}><AlarmClock size={18} /> {ui(language, 'Snooze 5 min')}</button><button className="alarm-dismiss-btn" onClick={stopCurrentAlarm}><X size={18} /> {ui(language, 'Dismiss')}</button></div></div></div></div>}{toast && <div className="toast"><Check size={18} /> {toast}</div>}</div>;
+  const currentPage = tab === 'home' ? <Home language={language} profile={profile} medicines={medicines} appointments={appointments} copy={copy} onTaken={markTaken} onEmergency={() => setShowEmergency(true)} onManageAppointments={() => setShowAppointments(true)} waterToday={waterToday} onAddWater={addWater} stepsToday={stepsToday} stepSource={stepSource} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} onNavigate={setTab} /> : tab === 'medicines' ? <Medicines language={language} medicines={medicines} copy={copy} onTaken={markTaken} onDelete={deleteMedicine} onAdd={() => setShowAdd(true)} onToast={setToast} onTestAlarm={handleTestAlarm} /> : tab === 'health' ? (bandSetup ? <BandSetup language={language} connected={bandConnected} onBack={() => setBandSetup(false)} onConnect={connectHardware} /> : <Health language={language} connected={bandConnected} onOpenSetup={() => setBandSetup(true)} onToast={setToast} heartRate={heartRate} bloodPressure={bloodPressure} temperature={temperature} stepsToday={stepsToday} stepSource={stepSource} waterToday={waterToday} onAddWater={addWater} profile={profile} />) : tab === 'ai' ? <AIHelp language={language} copy={copy} profile={profile} health={{ heartRate, bloodPressure, temperature, stepsToday, waterToday }} /> : <More language={language} profile={profile} largeText={largeText} setLargeText={setLargeText} onLanguage={changeLanguage} onEmergency={() => setShowEmergency(true)} onToast={setToast} onEditProfile={() => setShowProfileEdit(true)} onResetProfile={resetProfile} />;
+  return <div className={`app-frame ${largeText ? 'large-text' : ''}`}><div className="desktop-header"><Leaf size={22} /> AROGYAM <span>{ui(language, 'Your everyday health companion')}</span></div><div className="phone-shell"><header className="app-header"><div className="brand"><img src="/IMG_1169.jpg" alt="Arogyam logo" /><div><span>{copy('goodMorning')},</span><strong>{profile.name}</strong></div></div><div className="header-actions"><button className="language-toggle" onClick={changeLanguage}><Languages size={18} /> {language === 'en' ? 'हिं' : 'EN'}</button><div className="streak-pill"><Flame size={18} /> 0</div></div></header><main className="page-content">{currentPage}</main><nav className="bottom-nav">{([['home', Sun], ['medicines', AlarmClock], ['health', HeartPulse], ['ai', Sparkles], ['more', MoreHorizontal]] as const).map(([key, Icon]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={24} /><span>{copy(key === 'ai' ? 'aiHelp' : key)}</span></button>)}</nav></div>{showAdd && <AddMedicine language={language} onClose={() => setShowAdd(false)} onSave={handleSaveMedicine} />}{showProfileEdit && <ProfileEditor language={language} profile={profile} onClose={() => setShowProfileEdit(false)} onSave={saveProfile} onReset={resetProfile} />}{showAppointments && <AppointmentManager language={language} appointments={appointments} onClose={() => setShowAppointments(false)} onSave={saveAppointment} onDelete={(id) => setAppointments((current) => current.filter((item) => item.id !== id))} />}{showProfilePrompt && <ProfileCompletionPrompt language={language} onComplete={() => { setShowProfilePrompt(false); setShowProfileEdit(true); }} onLater={() => { sessionStorage.setItem('arogyam-profile-prompt-dismissed', '1'); setShowProfilePrompt(false); }} />}{showEmergency && <Emergency language={language} profile={profile} onClose={() => setShowEmergency(false)} />}{activeAlarm && <div className="alarm-overlay"><div className="alarm-card"><div className="alarm-icon-ring"><Bell size={42} className="alarm-bell-icon" /></div><span className="alarm-badge"><AlarmClock size={16} /> {formatTime(activeAlarm.time)} · {ui(language, 'Medicine Reminder')}</span><h1 className="alarm-title">{ui(language, 'Time to take your medicine!')}</h1><div className="alarm-medicine-details"><strong className="alarm-med-name">{activeAlarm.name}</strong><div className="alarm-med-meta"><span className="alarm-chip dosage">{activeAlarm.dosage}</span><span className="alarm-chip food">{ui(language, activeAlarm.food)}</span></div></div><p className="alarm-help-text">{ui(language, 'Please take this medication as prescribed by your doctor.')}</p><div className="alarm-actions"><button className="primary-button full alarm-take-btn" onClick={() => handleTakeAlarmMedicine(activeAlarm.id)}><Check size={22} /> {ui(language, 'Mark taken')}</button><div className="alarm-secondary-actions"><button className="alarm-snooze-btn" onClick={() => handleSnoozeAlarm(activeAlarm, 5)}><AlarmClock size={18} /> {ui(language, 'Snooze 5 min')}</button><button className="alarm-dismiss-btn" onClick={stopCurrentAlarm}><X size={18} /> {ui(language, 'Dismiss')}</button></div></div></div></div>}{toast && <div className="toast"><Check size={18} /> {toast}</div>}</div>;
 }
 
-function Home({ language, profile, medicines, copy, onTaken, onEmergency, waterToday, setWaterToday, stepsToday, heartRate, bloodPressure, temperature, onNavigate }: LangProps & { profile: Profile; medicines: Medicine[]; copy: (key: Parameters<typeof t>[1]) => string; onTaken: (id: number) => void; onEmergency: () => void; waterToday: number; setWaterToday: React.Dispatch<React.SetStateAction<number>>; stepsToday: number; heartRate: number; bloodPressure: string; temperature: string; onNavigate: (tab: Tab) => void }) {
+function Home({ language, profile, medicines, appointments, copy, onTaken, onEmergency, onManageAppointments, waterToday, onAddWater, stepsToday, stepSource, heartRate, bloodPressure, temperature, onNavigate }: LangProps & { profile: Profile; medicines: Medicine[]; appointments: Appointment[]; copy: (key: Parameters<typeof t>[1]) => string; onTaken: (id: number) => void; onEmergency: () => void; onManageAppointments: () => void; waterToday: number; onAddWater: () => void; stepsToday: number; stepSource: 'checking' | 'phone' | 'band' | 'unavailable'; heartRate: number; bloodPressure: string; temperature: string; onNavigate: (tab: Tab) => void }) {
   const nextMedicine = medicines.find((medicine) => !medicine.taken && !medicine.paused) || medicines[0];
+  const upcomingAppointment = appointments.filter((appointment) => new Date(`${appointment.date}T${appointment.time}`) >= new Date()).sort((a, b) => new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime())[0];
   const medicineProgress = medicines.length === 0 ? 0 : (medicines.filter((medicine) => medicine.taken).length / medicines.length) * 100;
   const today = new Intl.DateTimeFormat(language === 'hi' ? 'hi-IN' : 'en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
-  return <div className="home-page"><section className="hero-banner"><div><span className="eyebrow light"><Sun size={16} /> {today}</span><h1>{copy('goodMorning')}<br /><span>{profile.name}</span></h1><p>{ui(language, 'Small steps today make a healthier tomorrow.')}</p></div><div className="leaf-orbit"><img src="/IMG_1169.jpg" alt="Arogyam symbol" /></div></section><button className="emergency-button" onClick={onEmergency}><ShieldAlert size={25} /> {copy('emergency')}<span>{ui(language, 'Tap if you need immediate help')}</span></button><section className="section-block"><div className="section-heading"><h2>{copy('nextMedicine')}</h2><button className="link-button" onClick={() => onNavigate('medicines')}>{ui(language, 'See all')} <ChevronRight size={18} /></button></div>{nextMedicine ? <div className="medicine-highlight"><div className="medicine-icon"><AlarmClock size={26} /></div><div className="medicine-info"><strong>{nextMedicine.name}</strong><span>{nextMedicine.dosage} · {ui(language, nextMedicine.food)}</span><b>{formatTime(nextMedicine.time)}</b></div><button className="take-button" onClick={() => onTaken(nextMedicine.id)}>{nextMedicine.taken ? <Check size={22} /> : copy('taken')}</button></div> : <Empty icon={AlarmClock} text={copy('noMedicines')} />}</section><section className="section-block"><div className="section-heading"><h2>{copy('goals')}</h2><span className="soft-label">{ui(language, 'No readings yet')}</span></div><div className="rings-row"><ProgressRing value={medicineProgress} color="#2E8B57" icon={Check} label={copy('medicineGoal')} /><ProgressRing value={profile.water ? (waterToday / profile.water) * 100 : 0} color="#399CC1" icon={Droplets} label={copy('water')} /><ProgressRing value={profile.steps ? (stepsToday / profile.steps) * 100 : 0} color="#C5CB3E" icon={Target} label={copy('steps')} /></div></section><section className="vitals-strip"><div className="section-heading"><h2>{copy('liveVitals')}</h2><span className="live-dot"><i /> {ui(language, 'Waiting for input')}</span></div><div className="vitals-grid"><Vital language={language} label="Heart rate" value={`${heartRate}`} unit="BPM" status="normal" /><Vital language={language} label="Blood pressure" value={bloodPressure} unit="mmHg" status="normal" /><Vital language={language} label="Temperature" value={temperature} unit="°C" status="normal" /></div></section><section className="food-card"><div className="card-icon lime"><Utensils size={22} /></div><div><span className="eyebrow">{copy('foodPlan')}</span><h2>{ui(language, 'Your plan will appear here')}</h2><p>{ui(language, 'Add your details or ask Arogyam AI for a simple meal suggestion.')}</p></div><ChevronRight /></section><section className="appointment-card"><div className="calendar-box"><CalendarDays size={25} /></div><div><span className="eyebrow">{copy('appointment')}</span><h2>{ui(language, 'No appointment added')}</h2><p>{ui(language, 'Your next appointment will appear here.')}</p></div><ChevronRight /></section><section className="badge-card"><div className="badge-flame"><Flame size={25} /></div><div><span className="eyebrow">{copy('badges')}</span><h2>{ui(language, 'Your first badge is waiting')}</h2><p>{ui(language, 'Complete a goal to start your streak.')}</p><div className="mini-progress"><span style={{ width: '0%' }} /></div></div></section><button className="water-button" onClick={() => setWaterToday((value) => Math.min(value + 250, profile.water))}><Droplets size={22} /> {ui(language, 'Add a glass of water')} <span>+250 ml</span></button></div>;
+  const stepLabel = stepSource === 'phone' ? ui(language, 'Phone step sensor') : stepSource === 'band' ? ui(language, 'Health band') : stepSource === 'checking' ? ui(language, 'Checking step sensor') : ui(language, isNativeAndroid() ? 'Step sensor unavailable' : 'Install Android app for phone steps');
+  return <div className="home-page"><section className="hero-banner"><div><span className="eyebrow light"><Sun size={16} /> {today}</span><h1>{copy('goodMorning')}<br /><span>{profile.name}</span></h1><p>{ui(language, 'Small steps today make a healthier tomorrow.')}</p></div><div className="leaf-orbit"><img src="/IMG_1169.jpg" alt="Arogyam symbol" /></div></section><button className="emergency-button" onClick={onEmergency}><ShieldAlert size={25} /> {copy('emergency')}<span>{ui(language, 'Tap if you need immediate help')}</span></button><section className="section-block"><div className="section-heading"><h2>{copy('nextMedicine')}</h2><button className="link-button" onClick={() => onNavigate('medicines')}>{ui(language, 'See all')} <ChevronRight size={18} /></button></div>{nextMedicine ? <div className="medicine-highlight"><div className="medicine-icon"><AlarmClock size={26} /></div><div className="medicine-info"><strong>{nextMedicine.name}</strong><span>{nextMedicine.dosage} · {ui(language, nextMedicine.food)}</span><b>{formatTime(nextMedicine.time)}</b></div><button className="take-button" onClick={() => onTaken(nextMedicine.id)}>{nextMedicine.taken ? <Check size={22} /> : copy('taken')}</button></div> : <Empty icon={AlarmClock} text={copy('noMedicines')} />}</section><section className="section-block"><div className="section-heading"><h2>{copy('goals')}</h2><span className="soft-label">{ui(language, 'Today so far')}</span></div><div className="rings-row"><ProgressRing value={medicineProgress} color="#2E8B57" icon={Check} label={copy('medicineGoal')} /><ProgressRing value={profile.water ? (waterToday / profile.water) * 100 : 0} color="#399CC1" icon={Droplets} label={copy('water')} /><ProgressRing value={profile.steps ? (stepsToday / profile.steps) * 100 : 0} color="#C5CB3E" icon={Target} label={copy('steps')} /></div><p className="source-note">{stepLabel} · {stepsToday.toLocaleString()} {ui(language, 'steps')}</p></section><section className="vitals-strip"><div className="section-heading"><h2>{copy('liveVitals')}</h2><span className="live-dot"><i /> {ui(language, stepSource === 'band' ? 'Band connected' : 'No vital sensor connected')}</span></div><div className="vitals-grid"><Vital language={language} label="Heart rate" value={heartRate ? `${heartRate}` : '—'} unit="BPM" status={heartRate ? 'normal' : 'unavailable'} /><Vital language={language} label="Blood pressure" value={bloodPressure === '0/0' ? '—' : bloodPressure} unit="mmHg" status={bloodPressure === '0/0' ? 'unavailable' : 'normal'} /><Vital language={language} label="Temperature" value={temperature === '0' ? '—' : temperature} unit="°C" status={temperature === '0' ? 'unavailable' : 'normal'} /></div></section><section className="food-card"><div className="card-icon lime"><Utensils size={22} /></div><div><span className="eyebrow">{copy('foodPlan')}</span><h2>{ui(language, 'Your plan will appear here')}</h2><p>{ui(language, 'Add your details or ask Arogyam AI for a simple meal suggestion.')}</p></div><ChevronRight /></section><button className="appointment-card appointment-card-button" onClick={onManageAppointments}><div className="calendar-box"><CalendarDays size={25} /></div><div><span className="eyebrow">{copy('appointment')}</span><h2>{upcomingAppointment ? upcomingAppointment.title : ui(language, 'No appointment added')}</h2><p>{upcomingAppointment ? `${new Intl.DateTimeFormat(language === 'hi' ? 'hi-IN' : 'en-IN', { dateStyle: 'medium' }).format(new Date(`${upcomingAppointment.date}T${upcomingAppointment.time}`))} · ${formatTime(upcomingAppointment.time)}${upcomingAppointment.doctor ? ` · ${upcomingAppointment.doctor}` : ''}` : ui(language, 'Tap to schedule or manage appointments')}</p></div><ChevronRight /></button><section className="badge-card"><div className="badge-flame"><Flame size={25} /></div><div><span className="eyebrow">{copy('badges')}</span><h2>{ui(language, 'Your first badge is waiting')}</h2><p>{ui(language, 'Complete a goal to start your streak.')}</p><div className="mini-progress"><span style={{ width: '0%' }} /></div></div></section><button className="water-button" onClick={onAddWater}><Droplets size={22} /> {ui(language, 'Add a glass of water')} <span>+250 ml</span></button></div>;
 }
 
-function Vital({ language, label, value, unit, status }: LangProps & { label: string; value: string; unit: string; status: 'normal' | 'watch' }) { return <div className="vital"><span>{ui(language, label)}</span><strong className={status}>{value}</strong><small>{unit} · {status === 'normal' ? ui(language, 'Normal') : ui(language, 'Keep an eye')}</small></div>; }
+function Vital({ language, label, value, unit, status }: LangProps & { label: string; value: string; unit: string; status: 'normal' | 'watch' | 'unavailable' }) { return <div className="vital"><span>{ui(language, label)}</span><strong className={status}>{value}</strong><small>{status === 'unavailable' ? ui(language, 'Needs a sensor') : `${unit} · ${status === 'normal' ? ui(language, 'Normal') : ui(language, 'Keep an eye')}`}</small></div>; }
 function Empty({ icon: Icon, text }: { icon: typeof AlarmClock; text: string }) { return <div className="empty-state"><Icon size={26} /><span>{text}</span></div>; }
 
 function Medicines({ language, medicines, copy, onTaken, onDelete, onAdd, onToast, onTestAlarm }: LangProps & { medicines: Medicine[]; copy: (key: Parameters<typeof t>[1]) => string; onTaken: (id: number) => void; onDelete: (id: number) => void; onAdd: () => void; onToast: (text: string) => void; onTestAlarm: () => void }) {
@@ -243,9 +360,10 @@ function AddMedicine({ language, onClose, onSave }: LangProps & { onClose: () =>
   return <div className="modal-backdrop"><div className="modal-sheet"><div className="modal-header"><div><span className="eyebrow">{ui(language, 'Daily care')}</span><h2>{ui(language, 'Add a medicine')}</h2></div><IconButton label={ui(language, 'Close')} onClick={onClose}><X /></IconButton></div><label>{ui(language, 'Medicine name')}<input value={name} onChange={(event) => setName(event.target.value)} placeholder={ui(language, 'For example Metformin')} /></label><label>{ui(language, 'Dosage')}<input value={dosage} onChange={(event) => setDosage(event.target.value)} /></label><div className="two-columns"><label>{ui(language, 'Time')}<input type="time" value={time} onChange={(event) => setTime(event.target.value)} /></label><label>{ui(language, 'Food')}<select value={food} onChange={(event) => setFood(event.target.value)}><option>{ui(language, 'After food')}</option><option>{ui(language, 'Before food')}</option><option>{ui(language, 'Any time')}</option></select></label></div><div className="weekday-row">{['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, index) => <button type="button" key={`${day}-${index}`} className={days[index] ? 'selected' : ''} onClick={() => toggleDay(index)}>{day}</button>)}</div><button className="primary-button full" disabled={!name.trim() || !days.some(Boolean)} onClick={() => onSave({ name, dosage, time, food })}><Check size={21} /> {ui(language, 'Save medicine')}</button></div></div>;
 }
 
-function Health({ language, connected, onOpenSetup, onToast, heartRate, bloodPressure, temperature, stepsToday, waterToday, setWaterToday, profile }: LangProps & { connected: boolean; onOpenSetup: () => void; onToast: (text: string) => void; heartRate: number; bloodPressure: string; temperature: string; stepsToday: number; waterToday: number; setWaterToday: React.Dispatch<React.SetStateAction<number>>; profile: Profile }) {
+function Health({ language, connected, onOpenSetup, onToast, heartRate, bloodPressure, temperature, stepsToday, stepSource, waterToday, onAddWater, profile }: LangProps & { connected: boolean; onOpenSetup: () => void; onToast: (text: string) => void; heartRate: number; bloodPressure: string; temperature: string; stepsToday: number; stepSource: 'checking' | 'phone' | 'band' | 'unavailable'; waterToday: number; onAddWater: () => void; profile: Profile }) {
   const stepProgress = profile.steps ? (stepsToday / profile.steps) * 100 : 0;
-  return <div className="sub-page"><div className="page-title-row"><div><span className="eyebrow"><Activity size={16} /> {ui(language, 'Your body, simply')}</span><h1>{ui(language, 'Health')}</h1></div><div className="connection-dot"><i /> {connected ? ui(language, 'Connected') : ui(language, 'Not connected')}</div></div><button className="band-card band-card-button" onClick={onOpenSetup}><div className="watch-art"><Watch size={38} /></div><div><h2>{connected ? ui(language, 'Arogyam Band connected') : ui(language, 'Set up my health band')}</h2><p>{connected ? ui(language, 'Manage your hardware connection.') : ui(language, 'Connect your real band to receive readings.')}</p></div><ChevronRight className="success-icon" /></button><div className="health-vitals"><Vital language={language} label="Heart rate" value={`${heartRate}`} unit="BPM" status="normal" /><Vital language={language} label="Blood pressure" value={bloodPressure} unit="mmHg" status="normal" /><Vital language={language} label="Temperature" value={temperature} unit="°C" status="normal" /><Vital language={language} label="Sleep" value="0" unit="hours" status="normal" /></div><section className="steps-card"><div className="steps-ring" style={{ background: `conic-gradient(var(--lime) ${Math.min(stepProgress, 100)}%, #e8f0ea 0deg)` }}><div><strong>{stepsToday.toLocaleString()}</strong><span>{ui(language, 'of')} {profile.steps.toLocaleString()}</span></div></div><div><span className="eyebrow">{ui(language, "Today's movement")}</span><h2>{stepsToday ? ui(language, 'You are on your way') : ui(language, 'Waiting for step data')}</h2><p>{stepsToday ? `${Math.round(stepProgress)}% ${ui(language, '% of your daily steps goal.')}` : ui(language, 'Steps will appear after your band connects.')}</p><button className="link-button" onClick={() => onToast(ui(language, 'Weekly trends will appear after your band sends readings'))}>{ui(language, 'View weekly trend')} <ChevronRight size={18} /></button></div></section><div className="health-grid"><div className="metric-card"><Droplets size={22} /><strong>{waterToday} ml</strong><span>{ui(language, 'Water today')}</span><button onClick={() => setWaterToday((value) => value + 250)}>{ui(language, '+ glass')}</button></div><div className="metric-card"><MapPin size={22} /><strong>0 km</strong><span>{ui(language, 'Distance today')}</span><small>{ui(language, 'Waiting for input')}</small></div><div className="metric-card"><Activity size={22} /><strong>{ui(language, 'Waiting')}</strong><span>{ui(language, 'Body pattern')}</span><small>{ui(language, 'Needs a reading')}</small></div></div><div className="notice-card"><Bluetooth size={20} /><p>{ui(language, 'No demo readings are used. Connect a real band or add water manually to start filling your health data.')}</p></div></div>;
+  const stepDetail = stepSource === 'phone' ? 'Steps measured by this phone. Keep it with you while walking.' : stepSource === 'band' ? 'Steps received from your connected health band.' : stepSource === 'checking' ? 'Checking whether this phone has a step sensor.' : isNativeAndroid() ? 'This phone does not expose a step counter sensor.' : 'Phone step tracking is available in the installed Android app.';
+  return <div className="sub-page"><div className="page-title-row"><div><span className="eyebrow"><Activity size={16} /> {ui(language, 'Your body, simply')}</span><h1>{ui(language, 'Health')}</h1></div><div className="connection-dot"><i /> {connected ? ui(language, 'Connected') : ui(language, 'Not connected')}</div></div><button className="band-card band-card-button" onClick={onOpenSetup}><div className="watch-art"><Watch size={38} /></div><div><h2>{connected ? ui(language, 'Arogyam Band connected') : ui(language, 'Set up my health band')}</h2><p>{connected ? ui(language, 'Manage your hardware connection.') : ui(language, 'Connect your real band to receive readings.')}</p></div><ChevronRight className="success-icon" /></button><div className="health-vitals"><Vital language={language} label="Heart rate" value={heartRate ? `${heartRate}` : '—'} unit="BPM" status={heartRate ? 'normal' : 'unavailable'} /><Vital language={language} label="Blood pressure" value={bloodPressure === '0/0' ? '—' : bloodPressure} unit="mmHg" status={bloodPressure === '0/0' ? 'unavailable' : 'normal'} /><Vital language={language} label="Temperature" value={temperature === '0' ? '—' : temperature} unit="°C" status={temperature === '0' ? 'unavailable' : 'normal'} /><Vital language={language} label="Sleep" value="—" unit="hours" status="unavailable" /></div><section className="steps-card"><div className="steps-ring" style={{ background: `conic-gradient(var(--lime) ${Math.min(stepProgress, 100)}%, #e8f0ea 0deg)` }}><div><strong>{stepsToday.toLocaleString()}</strong><span>{ui(language, 'of')} {profile.steps.toLocaleString()}</span></div></div><div><span className="eyebrow">{ui(language, "Today's movement")}</span><h2>{stepsToday ? ui(language, 'You are on your way') : ui(language, 'No steps recorded yet')}</h2><p>{stepsToday ? `${Math.round(stepProgress)}% ${ui(language, '% of your daily steps goal.')}` : ui(language, stepDetail)}</p><button className="link-button" onClick={() => onToast(ui(language, 'Weekly step history is a good next feature.'))}>{ui(language, 'View weekly trend')} <ChevronRight size={18} /></button></div></section><div className="health-grid"><div className="metric-card"><Droplets size={22} /><strong>{waterToday} ml</strong><span>{ui(language, 'Water today')}</span><button onClick={onAddWater}>{ui(language, '+ glass')}</button></div><div className="metric-card"><MapPin size={22} /><strong>—</strong><span>{ui(language, 'Distance today')}</span><small>{ui(language, 'Needs location')}</small></div><div className="metric-card"><Activity size={22} /><strong>{ui(language, 'Unavailable')}</strong><span>{ui(language, 'Body temperature & BP')}</span><small>{ui(language, 'Requires external sensor')}</small></div></div><div className="notice-card"><Bluetooth size={20} /><p>{ui(language, 'Your phone step sensor provides real step counts. Blood pressure and body temperature need connected medical hardware; Arogyam leaves them blank until measured.')}</p></div><button className="widget-hint" onClick={() => onToast(ui(language, isNativeAndroid() ? 'Long-press your home screen, choose Widgets, then add Arogyam.' : 'The home-screen widget is available in the installed Android app.'))}><div className="widget-hint-icon"><Activity size={21} /></div><div><strong>{ui(language, 'Arogyam home-screen widget')}</strong><span>{ui(language, 'See steps and add 250 ml water without opening the app')}</span></div><ChevronRight size={19} /></button></div>;
 }
 
 function BandSetup({ language, connected, onBack, onConnect }: LangProps & { connected: boolean; onBack: () => void; onConnect: () => Promise<void> }) {
@@ -261,35 +379,33 @@ function AIHelp({ language, copy, profile, health }: LangProps & { copy: (key: P
       const payload = { message: userMessage, language, profile: { age: profile.age, gender: profile.gender, height: profile.height, weight: profile.weight, conditions: profile.conditions, food: profile.food }, health };
       const remoteUrl = import.meta.env.VITE_SUPABASE_URL ? `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-assistant` : '';
       const localUrl = '/functions/v1/ai-assistant';
-      const primaryUrl = import.meta.env.DEV ? localUrl : (remoteUrl || localUrl);
-      const fallbackUrl = primaryUrl === localUrl ? remoteUrl : localUrl;
+      const primaryUrl = remoteUrl || (import.meta.env.DEV ? localUrl : '');
+      if (!primaryUrl) throw new Error('AI_NOT_CONFIGURED');
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (import.meta.env.VITE_SUPABASE_ANON_KEY) headers['Authorization'] = `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`;
-
-      const res = await fetch(primaryUrl, { method: 'POST', headers, body: JSON.stringify(payload) });
-      let data: unknown = null;
-      if (res.ok) data = await res.json();
-
-      const isDemo = typeof data === 'object' && data !== null && 'demo' in data && Boolean((data as { demo?: boolean }).demo);
-      if ((!res.ok || isDemo) && fallbackUrl && fallbackUrl !== primaryUrl) {
-        try {
-          const fallbackRes = await fetch(fallbackUrl, { method: 'POST', headers, body: JSON.stringify(payload) });
-          if (fallbackRes.ok) {
-            const fallbackData: unknown = await fallbackRes.json();
-            if (fallbackData && typeof fallbackData === 'object' && 'reply' in fallbackData && typeof (fallbackData as { reply?: unknown }).reply === 'string') {
-              const fallbackIsDemo = 'demo' in fallbackData && Boolean((fallbackData as { demo?: boolean }).demo);
-              if (!fallbackIsDemo || !data) data = fallbackData;
-            }
-          }
-        } catch { /* keep primary or throw below */ }
+      if (import.meta.env.VITE_SUPABASE_ANON_KEY) {
+        headers['apikey'] = import.meta.env.VITE_SUPABASE_ANON_KEY;
+        headers['Authorization'] = `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`;
       }
-
-      if (!data || typeof data !== 'object' || !('reply' in data) || typeof (data as { reply: string }).reply !== 'string') {
-        throw new Error('Request failed');
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 20000);
+      let res: Response;
+      try { res = await fetch(primaryUrl, { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal }); }
+      finally { window.clearTimeout(timeout); }
+      const data: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        const errorCode = data && typeof data === 'object' && 'error' in data ? String((data as { error: unknown }).error) : '';
+        throw new Error(errorCode || (res.status === 404 ? 'AI_NOT_CONFIGURED' : 'AI_PROVIDER_UNAVAILABLE'));
       }
+      if (!data || typeof data !== 'object' || !('reply' in data) || typeof (data as { reply: string }).reply !== 'string' || ('demo' in data && Boolean((data as { demo?: boolean }).demo)) ) throw new Error('AI_NOT_CONFIGURED');
       setMessages((current) => [...current, (data as { reply: string }).reply]);
-    } catch {
-      setMessages((current) => [...current, language === 'hi' ? 'अभी AI से जुड़ नहीं पा रहा। थोड़ी देर बाद कोशिश करें।' : 'I cannot reach the AI service right now. Please try again shortly.']);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : '';
+      const reply = code === 'AI_NOT_CONFIGURED'
+        ? ui(language, 'Arogyam AI is not configured yet. Connect to the internet and contact the app administrator.')
+        : code === 'AI_PROVIDER_UNAVAILABLE'
+          ? ui(language, 'The AI service is temporarily unavailable. Check your internet connection and try again.')
+          : ui(language, 'Could not connect to Arogyam AI. Check Wi-Fi or mobile data and try again.');
+      setMessages((current) => [...current, reply]);
     } finally { setLoading(false); }
   };
   const startVoice = () => { const SpeechRecognitionCtor = (window as unknown as { webkitSpeechRecognition?: new () => { lang: string; onresult: (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void; onerror: () => void; start: () => void } }).webkitSpeechRecognition; if (!SpeechRecognitionCtor) { setChat(ui(language, 'Voice input is not available in this browser.')); return; } const recognition = new SpeechRecognitionCtor(); recognition.lang = language === 'hi' ? 'hi-IN' : 'en-IN'; recognition.onresult = (event) => setChat(event.results[0][0].transcript); recognition.onerror = () => setChat(ui(language, 'Voice input was not heard. Please try again.')); recognition.start(); };
@@ -298,8 +414,52 @@ function AIHelp({ language, copy, profile, health }: LangProps & { copy: (key: P
 
 function ProfileEditor({ language, profile, onClose, onSave, onReset }: LangProps & { profile: Profile; onClose: () => void; onSave: (profile: Profile) => void; onReset?: () => void }) {
   const [draft, setDraft] = useState<Profile>(profile);
+  const [heightUnit, setHeightUnit] = useState<'cm' | 'ft'>('cm');
+  const [waterUnit, setWaterUnit] = useState<'ml' | 'L'>('L');
   const update = (key: keyof Profile, value: string | number | string[]) => setDraft((current) => ({ ...current, [key]: value }));
-  return <div className="modal-backdrop"><div className="modal-sheet profile-editor"><div className="modal-header"><div><span className="eyebrow">{ui(language, 'Your details')}</span><h2>{ui(language, 'Edit my information')}</h2></div><IconButton label={ui(language, 'Close')} onClick={onClose}><X /></IconButton></div><label>{ui(language, 'Name')}<input value={draft.name} onChange={(event) => update('name', event.target.value)} /></label><div className="two-columns"><label>{ui(language, 'Age')}<input type="number" value={draft.age} onChange={(event) => update('age', event.target.value)} /></label><label>{ui(language, 'Gender')}<select value={draft.gender} onChange={(event) => update('gender', event.target.value)}><option value="">{ui(language, 'Choose')}</option><option>{ui(language, 'Female')}</option><option>{ui(language, 'Male')}</option><option>{ui(language, 'Other')}</option></select></label></div><div className="two-columns"><label>{ui(language, 'Height in cm')}<input type="number" value={draft.height} onChange={(event) => update('height', event.target.value)} /></label><label>{ui(language, 'Weight in kg')}<input type="number" value={draft.weight} onChange={(event) => update('weight', event.target.value)} /></label></div><label>{ui(language, 'Health condition')}<input value={draft.conditions[0] || ''} placeholder={ui(language, 'For example Diabetes')} onChange={(event) => update('conditions', event.target.value ? [event.target.value] : [])} /></label><label>{ui(language, 'Food preference')}<select value={draft.food} onChange={(event) => update('food', event.target.value)}><option value="">{ui(language, 'Choose')}</option><option>{ui(language, 'Vegetarian')}</option><option>{ui(language, 'Non-vegetarian')}</option><option>{ui(language, 'Vegan')}</option></select></label><div className="two-columns"><label>{ui(language, 'Daily steps')}<input type="number" value={draft.steps} onChange={(event) => update('steps', Number(event.target.value))} /></label><label>{ui(language, 'Daily water in ml')}<input type="number" value={draft.water} onChange={(event) => update('water', Number(event.target.value))} /></label></div><div className="profile-divider"><span>{ui(language, 'Emergency nominee')}</span></div><label>{ui(language, 'Nominee name')}<input value={draft.nominee} onChange={(event) => update('nominee', event.target.value)} /></label><div className="two-columns"><label>{ui(language, 'Relationship')}<input value={draft.relationship} onChange={(event) => update('relationship', event.target.value)} /></label><label>{ui(language, 'Phone')}<input type="tel" value={draft.phone} onChange={(event) => update('phone', event.target.value)} /></label></div><button className="primary-button full" onClick={() => onSave(draft)}><Save size={20} /> {ui(language, 'Save information')}</button>{onReset && <button type="button" className="text-button" style={{ marginTop: '8px' }} onClick={() => { if (window.confirm(ui(language, 'Start setup questionnaire from the beginning?'))) onReset(); }}><RotateCcw size={16} /> {ui(language, 'Redo setup questionnaire')}</button>}</div></div>;
+  const totalInches = Math.round((Number(draft.height) || 0) / 2.54);
+  const feet = Math.floor(totalInches / 12);
+  const inches = totalInches % 12;
+  const setHeightPart = (part: 'feet' | 'inches', value: string) => {
+    const nextFeet = part === 'feet' ? Number(value || 0) : feet;
+    const nextInches = part === 'inches' ? Number(value || 0) : inches;
+    const total = nextFeet * 12 + nextInches;
+    setDraft((current) => ({ ...current, height: value === '' && (part === 'feet' ? !inches : !feet) ? '' : String(Math.round(total * 2.54)) }));
+  };
+  const waterValue = draft.water ? String(waterUnit === 'L' ? draft.water / 1000 : draft.water) : '';
+  const setWaterValue = (value: string) => update('water', Math.round(Number(value || 0) * (waterUnit === 'L' ? 1000 : 1)));
+  return <div className="modal-backdrop"><div className="modal-sheet profile-editor"><div className="modal-header"><div><span className="eyebrow">{ui(language, 'Your details')}</span><h2>{ui(language, 'Edit my information')}</h2></div><IconButton label={ui(language, 'Close')} onClick={onClose}><X /></IconButton></div>
+    <label>{ui(language, 'Name')}<input value={draft.name} onChange={(event) => update('name', event.target.value)} /></label>
+    <div className="two-columns"><label>{ui(language, 'Age')}<input type="number" value={draft.age} onChange={(event) => update('age', event.target.value)} /></label><label>{ui(language, 'Gender')}<select value={draft.gender} onChange={(event) => update('gender', event.target.value)}><option value="">{ui(language, 'Choose')}</option><option>{ui(language, 'Female')}</option><option>{ui(language, 'Male')}</option><option>{ui(language, 'Other')}</option></select></label></div>
+    <div className="two-columns"><div className="profile-unit-field"><span className="profile-label">{t(language, 'height')}</span><UnitSelect label={ui(language, 'Height unit')} value={heightUnit} options={[{ value: 'cm', label: ui(language, 'Centimeters (cm)') }, { value: 'ft', label: ui(language, 'Feet & inches') }]} onChange={setHeightUnit} />{heightUnit === 'cm' ? <div className="input-unit-wrap"><input aria-label={ui(language, 'Height in centimeters')} type="number" min="1" value={draft.height} placeholder={ui(language, 'e.g. 170')} onChange={(event) => update('height', event.target.value)} /><span className="input-unit-badge">cm</span></div> : <div className="measurement-pair"><label><span>{ui(language, 'Feet')}</span><input aria-label={ui(language, 'Feet')} type="number" min="0" max="8" value={draft.height ? String(feet) : ''} placeholder="5" onChange={(event) => setHeightPart('feet', event.target.value)} /></label><label><span>{ui(language, 'Inches')}</span><input aria-label={ui(language, 'Inches')} type="number" min="0" max="11" value={draft.height ? String(inches) : ''} placeholder="6" onChange={(event) => setHeightPart('inches', event.target.value)} /></label></div>}<p className="unit-hint">{ui(language, 'Height conversion hint')}</p></div><label>{ui(language, 'Weight in kg')}<input type="number" value={draft.weight} onChange={(event) => update('weight', event.target.value)} /></label></div>
+    <div className="profile-condition-field"><span className="profile-label">{ui(language, 'Health condition')}</span><ConditionPicker language={language} value={draft.conditions} onChange={(conditions) => update('conditions', conditions)} /></div>
+    <label>{ui(language, 'Food preference')}<select value={draft.food} onChange={(event) => update('food', event.target.value)}><option value="">{ui(language, 'Choose')}</option><option>{ui(language, 'Vegetarian')}</option><option>{ui(language, 'Non-vegetarian')}</option><option>{ui(language, 'Vegan')}</option></select></label>
+    <div className="two-columns"><label>{ui(language, 'Daily steps')}<input type="number" value={draft.steps} onChange={(event) => update('steps', Number(event.target.value))} /></label><div className="profile-unit-field"><span className="profile-label">{t(language, 'waterGoal')}</span><UnitSelect label={ui(language, 'Water unit')} value={waterUnit} options={[{ value: 'ml', label: ui(language, 'Millilitres (ml)') }, { value: 'L', label: ui(language, 'Litres (L)') }]} onChange={setWaterUnit} /><div className="input-unit-wrap"><input aria-label={ui(language, 'Daily water goal')} type="number" min="0" step={waterUnit === 'L' ? '0.1' : '50'} value={waterValue} placeholder={ui(language, waterUnit === 'L' ? 'e.g. 2 or 2.5' : 'e.g. 2000')} onChange={(event) => setWaterValue(event.target.value)} /><span className="input-unit-badge">{waterUnit}</span></div><p className="unit-hint">{ui(language, 'Water conversion hint')}</p></div></div>
+    <div className="profile-divider"><span>{ui(language, 'Emergency nominee')}</span></div><label>{ui(language, 'Nominee name')}<input value={draft.nominee} onChange={(event) => update('nominee', event.target.value)} /></label><div className="two-columns"><label>{ui(language, 'Relationship')}<input value={draft.relationship} onChange={(event) => update('relationship', event.target.value)} /></label><label>{ui(language, 'Phone')}<input type="tel" value={draft.phone} onChange={(event) => update('phone', event.target.value)} /></label></div>
+    <button className="primary-button full" onClick={() => onSave(draft)}><Save size={20} /> {ui(language, 'Save information')}</button>{onReset && <button type="button" className="text-button" style={{ marginTop: '8px' }} onClick={() => { if (window.confirm(ui(language, 'Start setup questionnaire from the beginning?'))) onReset(); }}><RotateCcw size={16} /> {ui(language, 'Redo setup questionnaire')}</button>}</div></div>;
+}
+
+function AppointmentManager({ language, appointments, onClose, onSave, onDelete }: LangProps & { appointments: Appointment[]; onClose: () => void; onSave: (appointment: Appointment) => void; onDelete: (id: number) => void }) {
+  const [draft, setDraft] = useState<Appointment | null>(null);
+  const [form, setForm] = useState({ title: '', doctor: '', location: '', date: '', time: '09:00' });
+  const beginAdd = () => { setDraft(null); setForm({ title: '', doctor: '', location: '', date: '', time: '09:00' }); };
+  const edit = (appointment: Appointment) => { setDraft(appointment); setForm({ title: appointment.title, doctor: appointment.doctor, location: appointment.location, date: appointment.date, time: appointment.time }); };
+  const save = (event: React.FormEvent) => { event.preventDefault(); if (!form.title.trim() || !form.date || !form.time) return; onSave({ id: draft?.id ?? Date.now(), ...form, title: form.title.trim(), doctor: form.doctor.trim(), location: form.location.trim() }); beginAdd(); };
+  return <div className="modal-backdrop"><div className="modal-sheet appointment-manager"><div className="modal-header"><div><span className="eyebrow">{ui(language, 'Health planner')}</span><h2>{ui(language, 'Appointments')}</h2></div><IconButton label={ui(language, 'Close')} onClick={onClose}><X /></IconButton></div>
+    {appointments.length > 0 && <div className="appointment-list">{[...appointments].sort((a, b) => new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime()).map((appointment) => <div className="appointment-row" key={appointment.id}><button type="button" onClick={() => edit(appointment)}><strong>{appointment.title}</strong><span>{appointment.date} · {formatTime(appointment.time)}</span><small>{[appointment.doctor, appointment.location].filter(Boolean).join(' · ')}</small></button><button type="button" className="appointment-delete" aria-label={ui(language, 'Delete appointment')} onClick={() => onDelete(appointment.id)}><Trash2 size={18} /></button></div>)}</div>}
+    <form className="appointment-form" onSubmit={save}><h3>{ui(language, draft ? 'Edit appointment' : 'Add appointment')}</h3>
+      <label>{ui(language, 'Appointment title')}<input required value={form.title} placeholder={ui(language, 'For example, doctor visit')} onChange={(event) => setForm((value) => ({ ...value, title: event.target.value }))} /></label>
+      <div className="two-columns"><label>{ui(language, 'Date')}<input required type="date" min={localDayKey()} value={form.date} onChange={(event) => setForm((value) => ({ ...value, date: event.target.value }))} /></label><label>{ui(language, 'Time')}<input required type="time" value={form.time} onChange={(event) => setForm((value) => ({ ...value, time: event.target.value }))} /></label></div>
+      <label>{ui(language, 'Doctor or clinic')}<input value={form.doctor} placeholder={ui(language, 'Optional')} onChange={(event) => setForm((value) => ({ ...value, doctor: event.target.value }))} /></label>
+      <label>{ui(language, 'Location')}<input value={form.location} placeholder={ui(language, 'Optional')} onChange={(event) => setForm((value) => ({ ...value, location: event.target.value }))} /></label>
+      <button className="primary-button full" type="submit"><Save size={18} /> {ui(language, 'Save appointment')}</button>
+      {draft && <button className="text-button" type="button" onClick={beginAdd}>{ui(language, 'Add another appointment')}</button>}
+    </form>
+  </div></div>;
+}
+
+function ProfileCompletionPrompt({ language, onComplete, onLater }: LangProps & { onComplete: () => void; onLater: () => void }) {
+  return <div className="profile-prompt-backdrop"><div className="profile-prompt"><div className="profile-prompt-icon"><HeartPulse size={28} /></div><h2>{ui(language, 'Complete your health profile')}</h2><p>{ui(language, 'Add your basic details and health conditions so your goals and health tips fit you better. You can change them any time.')}</p><button className="primary-button full" onClick={onComplete}>{ui(language, 'Fill in my details')}</button><button className="text-button" onClick={onLater}>{ui(language, 'Maybe later')}</button></div></div>;
 }
 
 function More({ language, profile, largeText, setLargeText, onLanguage, onEmergency, onToast, onEditProfile, onResetProfile }: LangProps & { profile: Profile; largeText: boolean; setLargeText: React.Dispatch<React.SetStateAction<boolean>>; onLanguage: () => void; onEmergency: () => void; onToast: (text: string) => void; onEditProfile: () => void; onResetProfile: () => void }) {

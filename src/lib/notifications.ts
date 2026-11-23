@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+
 /**
  * Native push notification scheduler using @capacitor/local-notifications.
  * These notifications fire even when the app is CLOSED, locked, or in the background.
@@ -21,8 +23,7 @@ async function getPlugin() {
 
 /** Returns true when running inside a real Capacitor native container (Android / iOS) */
 function isNative(): boolean {
-  return typeof window !== 'undefined' &&
-    !!(window as unknown as { Capacitor?: { isNative?: boolean } }).Capacitor?.isNative;
+  return Capacitor.isNativePlatform();
 }
 
 /**
@@ -56,9 +57,9 @@ export async function scheduleMedicineNotification(
   food: string,
   hour: number,
   minute: number,
-): Promise<void> {
+): Promise<boolean> {
   const plugin = await getPlugin();
-  if (!plugin) return;
+  if (!plugin) return false;
 
   // Cancel any previous notification for this medicine first
   await cancelMedicineNotification(id);
@@ -86,13 +87,46 @@ export async function scheduleMedicineNotification(
           smallIcon: 'ic_launcher_foreground',
           iconColor: '#2E8B57',
           extra: { medicineId: id, medicineName: name, dosage, food },
-          channelId: 'medicine-reminders',
+          // Android notification channel settings cannot be changed after the
+          // channel is created. v2 gives existing installs a fresh audible channel.
+          channelId: 'medicine-reminders-v2',
+          isExactNotification: true,
+          isExactMandatory: true,
           ongoing: false,
         },
       ],
     });
+    return true;
   } catch (err) {
     console.warn('[Arogyam] Failed to schedule notification:', err);
+    return false;
+  }
+}
+
+/** Send one short native notification so the user can verify reminder sound and permission. */
+export async function scheduleTestNotification(): Promise<boolean> {
+  const plugin = await getPlugin();
+  if (!plugin) return false;
+  try {
+    await plugin.cancel({ notifications: [{ id: 999998 }] });
+    await plugin.schedule({
+      notifications: [{
+        id: 999998,
+        title: 'Arogyam reminder test',
+        body: 'Notifications and medicine reminder sound are ready.',
+        schedule: { at: new Date(Date.now() + 3000), allowWhileIdle: true },
+        sound: 'default',
+        smallIcon: 'ic_launcher_foreground',
+        iconColor: '#2E8B57',
+        channelId: 'medicine-reminders-v2',
+        isExactNotification: true,
+        isExactMandatory: true,
+      }],
+    });
+    return true;
+  } catch (err) {
+    console.warn('[Arogyam] Failed to schedule test notification:', err);
+    return false;
   }
 }
 
@@ -139,8 +173,8 @@ export async function createMedicineNotificationChannel(): Promise<void> {
     };
     if (typeof p.createChannel === 'function') {
       await p.createChannel({
-        id: 'medicine-reminders',
-        name: 'Medicine Reminders',
+        id: 'medicine-reminders-v2',
+        name: 'Arogyam Medicine Reminders',
         description: 'Daily medicine alarm reminders from Arogyam',
         importance: 5,         // IMPORTANCE_HIGH — shows as heads-up popup
         visibility: 1,         // VISIBILITY_PUBLIC — shows on lock screen

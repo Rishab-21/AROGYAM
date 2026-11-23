@@ -37,9 +37,17 @@ UUIDs and parsing live in `src/config/bluetooth.ts` and `src/lib/bluetooth.ts`. 
 
 ## AI health assistant
 
-The AI assistant is served by a Supabase Edge Function so the API key stays secret. It uses the deployed `GEMINI_API_KEY` secret and sends only the health-related profile fields and current readings needed for a short answer. Emergency nominee phone details are not sent to Gemini. The app falls back to a friendly reply when the key is unavailable.
+The AI assistant is served by the Supabase Edge Function at `supabase/functions/ai-assistant/index.ts`; the Gemini API key must remain server-side. The installed app sends requests over Wi-Fi or mobile data to the Supabase URL configured at build time. Android already has the required Internet permission. A working Internet connection alone is not enough: deploy the Edge Function and add `GEMINI_API_KEY` under **Supabase Dashboard → Project Settings → Edge Functions → Secrets**, then redeploy the function. Do not place the Gemini key in a `VITE_*` variable or in the app bundle. Deploy with `npx supabase functions deploy ai-assistant --project-ref <project-ref>` after installing/logging into the Supabase CLI. If the function or key is missing, the app now reports that setup is required instead of showing a pretend AI answer.
 
 ## PWA
 
 The app is installable. The manifest is at `public/manifest.webmanifest` and the service worker at `public/sw.js`. The uploaded logo is used as the app icon, splash, and header brand.
+
+## Phone steps and Android home-screen widget
+
+The native Android app reads steps from the phone's `TYPE_STEP_COUNTER` sensor and asks for Android's Activity Recognition permission. Counts are kept on the device and reset by day. A phone without that sensor will show that step tracking is unavailable; the browser preview cannot access Android's native step sensor.
+
+To add the widget on Android, long-press the home screen, open **Widgets**, and choose **Arogyam**. The widget shows today's phone steps and water total, and its **Add 250 ml water** button works without opening the app. The widget is an Android native feature and is not included in the web preview or the iOS target.
+
+Blood pressure, body temperature, heart rate, and sleep are shown as unavailable until a compatible external sensor supplies real readings. The phone's step sensor does not measure these values.
 # AROGYAM_2.0
