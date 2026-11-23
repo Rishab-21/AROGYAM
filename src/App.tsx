@@ -563,7 +563,9 @@ function AIHelp({ language, copy, profile, health }: LangProps & { copy: (key: P
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) {
         headers['apikey'] = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-        headers['Authorization'] = `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`;
+        const { data: { session } } = supabase ? await supabase.auth.getSession() : { data: { session: null } };
+        if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+        else if (!import.meta.env.DEV) throw new Error('AI_NOT_SIGNED_IN');
       }
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 20000);
@@ -573,7 +575,7 @@ function AIHelp({ language, copy, profile, health }: LangProps & { copy: (key: P
       const data: unknown = await res.json().catch(() => null);
       if (!res.ok) {
         const errorCode = data && typeof data === 'object' && 'error' in data ? String((data as { error: unknown }).error) : '';
-        throw new Error(errorCode || (res.status === 404 ? 'AI_NOT_CONFIGURED' : 'AI_PROVIDER_UNAVAILABLE'));
+        throw new Error(errorCode || (res.status === 401 || res.status === 403 ? 'AI_NOT_SIGNED_IN' : res.status === 404 ? 'AI_NOT_CONFIGURED' : 'AI_PROVIDER_UNAVAILABLE'));
       }
       if (!data || typeof data !== 'object' || !('reply' in data) || typeof (data as { reply: string }).reply !== 'string' || ('demo' in data && Boolean((data as { demo?: boolean }).demo)) ) throw new Error('AI_NOT_CONFIGURED');
       setMessages((current) => [...current, (data as { reply: string }).reply]);
@@ -581,6 +583,8 @@ function AIHelp({ language, copy, profile, health }: LangProps & { copy: (key: P
       const code = error instanceof Error ? error.message : '';
       const reply = code === 'AI_NOT_CONFIGURED'
         ? ui(language, 'Arogyam AI is not configured yet. Connect to the internet and contact the app administrator.')
+        : code === 'AI_NOT_SIGNED_IN'
+          ? ui(language, 'Your account session expired. Sign in again and retry.')
         : code === 'AI_PROVIDER_UNAVAILABLE'
           ? ui(language, 'The AI service is temporarily unavailable. Check your internet connection and try again.')
           : ui(language, 'Could not connect to Arogyam AI. Check Wi-Fi or mobile data and try again.');
